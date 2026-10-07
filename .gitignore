@@ -1,0 +1,24 @@
+# 编译产物 —— build/ 里有 Swift 模块缓存、.app、zip，约 330MB，绝不入库
+build/
+*.app
+*.zip
+
+# macOS
+.DS_Store
+._*
+Icon\r
+
+# Xcode / SwiftPM（本工程用 swiftc 直编，用不到，防手滑）
+.swiftpm/
+*.xcuserstate
+*.xcworkspace
+Package.resolved
+
+# 凭据一律不入库。
+# 本 App 的凭据实际存放在 ~/Library/Application Support/DeepSeekFloat/，
+# 不在仓库内；下面几行是双保险，防止将来有人改路径。
+credentials.json
+*.credentials.yaml
+*.token
+.env
+.env.*
