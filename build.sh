@@ -104,6 +104,15 @@ cmd_install() {
   cmd_build
   quit_running
 
+  # 重装前先记住「开机自启」是否开着。
+  # ad-hoc 签名每次编译 cdhash 都会变，等于换了一个代码身份，
+  # SMAppService 原先的注册会失效 —— 不自动恢复的话，用户每次更新都要手动再开一次。
+  local had_login_item=false
+  if [ -x "$INSTALLED_APP/Contents/MacOS/$EXEC_NAME" ] \
+     && "$INSTALLED_APP/Contents/MacOS/$EXEC_NAME" --login-item status >/dev/null 2>&1; then
+    had_login_item=true
+  fi
+
   log "安装到 $INSTALL_DIR"
   rm -rf "$INSTALLED_APP"
   # ditto 会连代码签名与扩展属性一起搬，比 cp -R 可靠
@@ -121,6 +130,14 @@ cmd_install() {
     log "签名校验通过"
   else
     warn "签名校验有告警（ad-hoc 签名属正常，不影响本机运行）"
+  fi
+
+  if [ "$had_login_item" = true ]; then
+    if "$INSTALLED_APP/Contents/MacOS/$EXEC_NAME" --login-item enable >/dev/null 2>&1; then
+      log "已恢复开机自启注册（ad-hoc 重装会使其失效）"
+    else
+      warn "开机自启恢复失败；请在菜单栏里重新开启一次"
+    fi
   fi
 
   log "启动"
