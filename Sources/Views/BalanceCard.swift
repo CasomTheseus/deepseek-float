@@ -138,7 +138,9 @@ struct BalanceCard: View {
     /// 峰谷时段：官方口径见 PeakSchedule
     private var peakStat: some View {
         let isPeak = model.isPeakNow
-        let tint = isPeak ? DS.peak : DS.offPeak
+        // 与收起态的单字价签同一套颜色（红=峰 / 绿=谷），
+        // 否则同一概念两处不同色，会让人以为是两回事
+        let tint = isPeak ? DS.peakTag : DS.offPeakTag
         return VStack(alignment: .leading, spacing: 1) {
             Text("时段")
                 .font(.system(size: 9))

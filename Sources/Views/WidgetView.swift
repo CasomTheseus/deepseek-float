@@ -222,11 +222,14 @@ struct WidgetView: View {
         Card(padding: 9) {
             HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(model.balance.map { Fmt.moneyCompact($0.primary?.total ?? 0, currency: $0.primary?.currency ?? "CNY") } ?? "—")
-                        .font(.ds(19, .semibold, rounded: true))
-                        .foregroundStyle(DS.textPrimary)
-                        .contentTransition(.numericText())
-                        .animation(.snappy(duration: 0.45), value: model.balance?.primary?.total ?? 0)
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Text(model.balance.map { Fmt.moneyCompact($0.primary?.total ?? 0, currency: $0.primary?.currency ?? "CNY") } ?? "—")
+                            .font(.ds(19, .semibold, rounded: true))
+                            .foregroundStyle(DS.textPrimary)
+                            .contentTransition(.numericText())
+                            .animation(.snappy(duration: 0.45), value: model.balance?.primary?.total ?? 0)
+                        peakTag
+                    }
                     Text(model.statusLevel.label)
                         .font(.system(size: 8.5))
                         .foregroundStyle(model.statusLevel.color)
@@ -262,6 +265,23 @@ struct WidgetView: View {
                 }
             }
         }
+    }
+
+    /// 收起态的峰谷价签：红「峰」= 高峰原价，绿「谷」= 空闲五折。
+    ///
+    /// 收起形态才是常驻可见的那一面，所以价格档位必须一眼能读到——
+    /// 它直接决定「现在跑批划不划算」，比余额数字更有决策价值。
+    private var peakTag: some View {
+        let isPeak = model.isPeakNow
+        return Text(isPeak ? "峰" : "谷")
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(isPeak ? DS.peakTag : DS.offPeakTag)
+            .accessibilityLabel(isPeak ? "高峰时段" : "空闲时段")
+            .help(
+                isPeak
+                    ? "高峰时段：单价 ×1（北京时区 周一至周五 9:00–12:00、14:00–18:00）\n\(model.peakTransitionText)"
+                    : "空闲时段：单价 5 折（其余时段，含周末与法定节假日全天）\n\(model.peakTransitionText)"
+            )
     }
 
     // MARK: - 底栏

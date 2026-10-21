@@ -19,6 +19,12 @@ enum DS {
     static let peak = Color(red: 1.00, green: 0.62, blue: 0.30)      // 高峰时段
     static let offPeak = Color(red: 0.38, green: 0.82, blue: 0.62)   // 空闲时段
 
+    /// 峰谷单字价签（收起态用）：红=高峰，绿=空闲。
+    /// 与上面的 peak/offPeak 分开，是因为那两个还兼作「低余额告警」等处的语义色，
+    /// 直接把 peak 改成红色会让告警态和价签撞色。
+    static let peakTag = Color(red: 1.00, green: 0.40, blue: 0.42)
+    static let offPeakTag = Color(red: 0.35, green: 0.90, blue: 0.62)
+
     static let textPrimary = Color.white.opacity(0.96)
     static let textSecondary = Color.white.opacity(0.62)
     static let textTertiary = Color.white.opacity(0.38)

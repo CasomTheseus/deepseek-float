@@ -38,7 +38,7 @@ struct DeepSeekFloatApp {
         }
 
         // 离屏渲染：把面板画成 PNG。不依赖「屏幕录制」权限，用于验收排版。
-        //   --render out.png [--settings] [--collapsed] [--empty] [--daily] [--bars] [--low]
+        //   --render out.png [--settings] [--collapsed] [--empty] [--daily] [--bars] [--low] [--peak|--offpeak]
         if let index = arguments.firstIndex(of: "--render") {
             let path = index + 1 < arguments.count ? arguments[index + 1] : "widget.png"
             renderSnapshot(
@@ -48,7 +48,9 @@ struct DeepSeekFloatApp {
                 empty: arguments.contains("--empty"),
                 daily: arguments.contains("--daily"),
                 bars: arguments.contains("--bars"),
-                low: arguments.contains("--low")
+                low: arguments.contains("--low"),
+                forcePeak: arguments.contains("--peak"),
+                forceOffPeak: arguments.contains("--offpeak")
             )
             exit(0)
         }
@@ -66,13 +68,16 @@ struct DeepSeekFloatApp {
     /// 注意：离屏渲染拿不到 `NSVisualEffectView` 的真实模糊，背景会退化成渐变，
     /// 但排版、字号、颜色、图表都是真实结果。
     @MainActor
-    private static func renderSnapshot(to path: String, settings: Bool, collapsed: Bool, empty: Bool, daily: Bool, bars: Bool, low: Bool) {
+    private static func renderSnapshot(to path: String, settings: Bool, collapsed: Bool, empty: Bool, daily: Bool, bars: Bool, low: Bool, forcePeak: Bool, forceOffPeak: Bool) {
         let model = AppModel(startAutomatically: false, withSampleData: !empty, sampleDaily: daily)
         model.showSettings = settings
         model.expanded = !collapsed
         if bars { model.chartMode = .bars }
         // 把余额压到阈值以下，用来验收低余额告警态（呼吸红边）
         if low { _ = model.simulateBalanceChange(-341.51) }
+        // 强制峰谷，用来在同一时刻把两种单字价签都截出来验收
+        if forcePeak { model.peakOverride = true }
+        if forceOffPeak { model.peakOverride = false }
         let renderer = ImageRenderer(
             content: WidgetView()
                 .environmentObject(model)

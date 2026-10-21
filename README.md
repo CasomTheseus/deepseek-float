@@ -95,6 +95,11 @@ cd DeepSeekFloat
 | ![设置](docs/screenshot-settings.png) | ![引导](docs/screenshot-onboarding.png) |
 
 - **余额卡**：大字余额 + 可用状态灯 + 充值/赠送拆分 + **峰时/闲时标识**（附切换倒计时）+ 所选时间范围的消耗 + 按当前速率估算的可用天数。
+- **收起态峰谷价签**：余额右侧一个单字标记——红 **峰** = 高峰原价，绿 **谷** = 空闲五折。收起形态是常驻可见的那一面，所以价格档位必须一眼能读到，它直接决定「现在跑批划不划算」。悬停可看切换倒计时。
+
+| 高峰时段 | 空闲时段 |
+|---|---|
+| ![峰](docs/tag-peak.png) | ![谷](docs/tag-offpeak.png) |
 - **缓存命中卡**：**双同心环**（外环命中率、内环输出占比）+ 命中/未命中/输出三段构成条 + 总 token + 请求次数 + 命中率分级徽章（≥90% 亮青绿加外发光）。
 - **用量趋势卡**：今日 / 24小时 / 7天 / 30天 / 本月 / 90天 切换，**柱状 / 热力双模式**。热力图会按拿到的数据粒度自适应——小时级数据渲染成 24 格小时热力条，天级数据渲染成「星期 × 周」贡献图（带星期轴与日期区间）。
 - **分模型卡**：每个模型的 token、费用，以及**每百万 token 平均费用**（从真实账单反推，跨模型可比）。
@@ -153,7 +158,7 @@ DSF_USER_TOKEN=xxx  $APP --selftest
 $APP --parsetest
 
 # 离屏渲染排版快照（不需要「屏幕录制」权限）
-$APP --render out.png [--settings] [--collapsed] [--empty] [--daily] [--bars]
+$APP --render out.png [--settings] [--collapsed] [--empty] [--daily] [--bars] [--low] [--peak|--offpeak]
 
 # 窗口几何探针（不需要额外权限）
 swift Tools/WindowProbe.swift DeepSeek

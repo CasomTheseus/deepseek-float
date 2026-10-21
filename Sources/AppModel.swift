@@ -429,7 +429,11 @@ final class AppModel: ObservableObject {
 
     // MARK: - 峰谷时段
 
-    var isPeakNow: Bool { PeakSchedule.isPeak() }
+    /// 仅预览/截图用：强制指定峰谷状态，nil 表示按真实时间判定。
+    /// 没有它就没法在同一个时间点把「峰」「谷」两种价签都截出来做验收。
+    var peakOverride: Bool?
+
+    var isPeakNow: Bool { peakOverride ?? PeakSchedule.isPeak() }
 
     /// 例：「1 小时 20 分后进入空闲时段」
     var peakTransitionText: String {
