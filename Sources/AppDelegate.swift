@@ -15,8 +15,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 用于录屏、截图、抓动画帧 —— 否则这些素材里会带上真实账号余额。
     private let demo: Bool
 
-    init(demo: Bool = false) {
+    /// `--peak` / `--offpeak`：强制峰谷状态，方便预览当前时段看不到的那种价签
+    private let peakOverride: Bool?
+
+    init(demo: Bool = false, peakOverride: Bool? = nil) {
         self.demo = demo
+        self.peakOverride = peakOverride
         super.init()
     }
 
@@ -29,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model = demo
             ? AppModel(startAutomatically: false, withSampleData: true)
             : AppModel()
+        model.peakOverride = peakOverride
         panelController = FloatingPanelController(model: model)
         statusController = StatusItemController(model: model, panelController: panelController)
 

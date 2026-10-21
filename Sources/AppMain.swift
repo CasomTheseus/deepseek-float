@@ -58,7 +58,13 @@ struct DeepSeekFloatApp {
         let app = NSApplication.shared
         // --demo：用示例数据跑 GUI（不联网、不读真实凭据），用于录屏 / 截图 / 抓动画帧。
         // 没有它就只能拿真账号跑，截图里会带上真实余额。
-        let delegate = AppDelegate(demo: arguments.contains("--demo"))
+        // --peak / --offpeak：强制峰谷状态，方便在非对应时段预览另一种价签
+        // （比如现在是空闲时段，想看看高峰的红「峰」长什么样）。
+        let delegate = AppDelegate(
+            demo: arguments.contains("--demo"),
+            peakOverride: arguments.contains("--peak") ? true
+                : (arguments.contains("--offpeak") ? false : nil)
+        )
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
         app.run()
