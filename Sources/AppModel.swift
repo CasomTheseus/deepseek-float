@@ -101,7 +101,8 @@ final class AppModel: ObservableObject {
         hasUserToken = true
         // 此时 loaded 仍为 false，didSet 里的 persist/联网都会被闸门挡住
         range = daily ? .last90d : .today
-        chartMode = .heat
+        // 注意：这里不要覆盖 chartMode —— 它已经由 loadPreferences() 从偏好读出来了。
+        // 之前强制设成 .heat，导致 demo 实例永远进不去柱状图，调试 C2 时白找半天。
         // 故意用一眼假的占位串。绝不能用真实 Key 的片段——
         // 示例数据会被渲染进 docs/ 的截图里，而那些截图会随仓库公开。
         maskedAPIKey = "sk-demo••••••demo0"

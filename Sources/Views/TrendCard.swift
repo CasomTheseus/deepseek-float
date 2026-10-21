@@ -77,6 +77,10 @@ struct TrendCard: View {
 
     // MARK: - 柱状
 
+    private var indexedBuckets: [IndexedBucket] {
+        buckets.enumerated().map { IndexedBucket(index: $0.offset, bucket: $0.element) }
+    }
+
     @ViewBuilder
     private var barChart: some View {
         if buckets.isEmpty {
@@ -85,38 +89,23 @@ struct TrendCard: View {
             GeometryReader { geo in
                 let spacing: CGFloat = buckets.count > 40 ? 1 : (buckets.count > 15 ? 2 : 4)
                 HStack(alignment: .bottom, spacing: spacing) {
-                    ForEach(buckets) { bucket in
-                        column(bucket, height: geo.size.height)
+                    ForEach(indexedBuckets) { item in
+                        BarColumn(
+                            bucket: item.bucket,
+                            maxTotal: maxTotal,
+                            availableHeight: geo.size.height,
+                            index: item.index,
+                            tooltip: tooltip(item.bucket)
+                        )
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // 切时间范围时整组重建，生长动画会重播一遍
+                // （只靠 bucket id 变化的话，同范围内刷新数据不会重播）
+                .id(model.range)
             }
             .frame(height: 54)
         }
-    }
-
-    private func column(_ bucket: UsageBucket, height: CGFloat) -> some View {
-        let scale = height / maxTotal
-        let hitH = CGFloat(Double(bucket.breakdown.cacheHit) * scale)
-        let missH = CGFloat(Double(bucket.breakdown.cacheMiss) * scale)
-        let outH = CGFloat(Double(bucket.breakdown.output) * scale)
-        let visibleTotal = hitH + missH + outH
-
-        return VStack(spacing: 0.5) {
-            Spacer(minLength: 0)
-            if outH > 0.4 { bar(DS.output, outH) }
-            if missH > 0.4 { bar(DS.miss, missH) }
-            if hitH > 0.4 { bar(DS.hit, hitH) }
-            if visibleTotal < 1.2 { bar(Color.white.opacity(0.18), 1.5) }
-        }
-        .frame(maxWidth: .infinity)
-        .help(tooltip(bucket))
-    }
-
-    private func bar(_ color: Color, _ h: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 1.2, style: .continuous)
-            .fill(color)
-            .frame(height: max(0.8, h))
     }
 
     private func emptyPlaceholder(height: CGFloat) -> some View {
@@ -134,6 +123,67 @@ struct TrendCard: View {
     private func tooltip(_ bucket: UsageBucket) -> String {
         "\(bucket.label)：命中 \(Fmt.tokens(bucket.breakdown.cacheHit)) · 未命中 \(Fmt.tokens(bucket.breakdown.cacheMiss)) · 输出 \(Fmt.tokens(bucket.breakdown.output))"
             + (bucket.cost > 0 ? " · \(Fmt.moneyCompact(bucket.cost, currency: model.usage?.currency ?? "CNY"))" : "")
+    }
+}
+
+// MARK: - 单根柱子
+
+/// 带索引的桶。`ForEach` 需要稳定标识，而 Swift 不支持指向元组成员的 key path，
+/// 所以用一个薄包装把序号带上，用来做错峰延迟。
+private struct IndexedBucket: Identifiable {
+    let index: Int
+    let bucket: UsageBucket
+    var id: Double { bucket.id }
+}
+
+/// 一根堆叠柱（命中 / 未命中 / 输出）。独立成 View 是为了拥有自己的生长状态。
+private struct BarColumn: View {
+    let bucket: UsageBucket
+    let maxTotal: Double
+    let availableHeight: CGFloat
+    let index: Int
+    let tooltip: String
+
+    /// 0 → 1 的生长进度（视觉细节 C2）
+    @State private var growth: Double = 0
+
+    var body: some View {
+        let scale = availableHeight / maxTotal
+        let hitH = CGFloat(Double(bucket.breakdown.cacheHit) * scale) * growth
+        let missH = CGFloat(Double(bucket.breakdown.cacheMiss) * scale) * growth
+        let outH = CGFloat(Double(bucket.breakdown.output) * scale) * growth
+
+        return VStack(spacing: 0.5) {
+            Spacer(minLength: 0)
+            if outH > 0.4 { bar(DS.output, outH) }
+            if missH > 0.4 { bar(DS.miss, missH) }
+            if hitH > 0.4 { bar(DS.hit, hitH) }
+            // 该桶确实没有数据时留一条灰线；用原始 token 数判断，
+            // 不能用缩放后的高度，否则生长过程中每个空桶都会闪一条灰线
+            if bucket.breakdown.totalTokens == 0 {
+                bar(Color.white.opacity(0.18), 1.5)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .help(tooltip)
+        .onAppear {
+            // 按序号错峰，"从左往右依次长出来"。延迟封顶，否则 90 天那种
+            // 84 根柱子的场景动画要拖到两秒以上
+            let delay = min(Double(index) * 0.018, 0.45)
+            let logging = ProcessInfo.processInfo.environment["DSF_ANIM_LOG"] == "1"
+            if logging { NSLog("[DeepSeekFloat] BarColumn \(index) onAppear growth=\(growth) delay=\(delay)") }
+            withAnimation(.easeOut(duration: 0.42).delay(delay), completionCriteria: .logicallyComplete) {
+                growth = 1
+            } completion: {
+                if logging { NSLog("[DeepSeekFloat] BarColumn \(index) 生长完成") }
+            }
+        }
+    }
+
+    private func bar(_ color: Color, _ h: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 1.2, style: .continuous)
+            .fill(color)
+            .frame(height: max(0.8, h))
     }
 }
 

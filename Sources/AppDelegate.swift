@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var probeSignal: DispatchSourceSignal?
     private var notifySignal: DispatchSourceSignal?
     private var topToggleSignal: DispatchSourceSignal?
+    private var chartProbeSignal: DispatchSourceSignal?
 
     /// `--demo`：用示例数据跑 GUI，不联网、不读真实凭据。
     /// 用于录屏、截图、抓动画帧 —— 否则这些素材里会带上真实账号余额。
@@ -41,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installProbeSignal()
         installNotifySignal()
         installTopToggleSignal()
+        installChartProbeSignal()
         Notifier.requestAuthorization()
         panelController.show()
     }
@@ -159,6 +161,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let url = URL(fileURLWithPath: "/tmp/dsf-top-report.txt")
         let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         try? (existing + report).write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// `kill -INFO <pid>` 柱状图生长探针：切一次时间范围触发重播，
+    /// 然后抓 0.06 / 0.20 / 0.45 秒三帧。
+    ///
+    /// 为什么需要专用通道：生长动画只在视图重建时播一次，
+    /// 静态渲染只能看到终态，普通抓帧又很难卡在头 0.5 秒里。
+    private func installChartProbeSignal() {
+        signal(SIGINFO, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGINFO, queue: .main)
+        source.setEventHandler { [weak self] in self?.runChartProbe() }
+        source.resume()
+        chartProbeSignal = source
+    }
+
+    private func runChartProbe() {
+        guard let window = panelController?.window else { return }
+        let cases = UsageRange.allCases
+        if let current = cases.firstIndex(of: model.range) {
+            model.range = cases[(current + 1) % cases.count]
+        }
+        NSLog("[DeepSeekFloat] 柱状图生长探针：范围=\(model.range.title)")
+        for (name, delay) in [("c006", 0.06), ("c020", 0.20), ("c045", 0.45)] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                _ = LiveCapture.write(window, to: "/tmp/dsf-anim-\(name).png")
+            }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

@@ -38,7 +38,7 @@ struct DeepSeekFloatApp {
         }
 
         // 离屏渲染：把面板画成 PNG。不依赖「屏幕录制」权限，用于验收排版。
-        //   --render out.png [--settings] [--collapsed] [--empty] [--daily] [--bars] [--low] [--peak|--offpeak]
+        //   --render out.png [--settings] [--collapsed] [--empty] [--daily] [--bars] [--low] [--bars|--heat] [--peak|--offpeak]
         if let index = arguments.firstIndex(of: "--render") {
             let path = index + 1 < arguments.count ? arguments[index + 1] : "widget.png"
             renderSnapshot(
@@ -48,6 +48,7 @@ struct DeepSeekFloatApp {
                 empty: arguments.contains("--empty"),
                 daily: arguments.contains("--daily"),
                 bars: arguments.contains("--bars"),
+                heat: arguments.contains("--heat"),
                 low: arguments.contains("--low"),
                 forcePeak: arguments.contains("--peak"),
                 forceOffPeak: arguments.contains("--offpeak")
@@ -74,11 +75,13 @@ struct DeepSeekFloatApp {
     /// 注意：离屏渲染拿不到 `NSVisualEffectView` 的真实模糊，背景会退化成渐变，
     /// 但排版、字号、颜色、图表都是真实结果。
     @MainActor
-    private static func renderSnapshot(to path: String, settings: Bool, collapsed: Bool, empty: Bool, daily: Bool, bars: Bool, low: Bool, forcePeak: Bool, forceOffPeak: Bool) {
+    private static func renderSnapshot(to path: String, settings: Bool, collapsed: Bool, empty: Bool, daily: Bool, bars: Bool, heat: Bool, low: Bool, forcePeak: Bool, forceOffPeak: Bool) {
         let model = AppModel(startAutomatically: false, withSampleData: !empty, sampleDaily: daily)
         model.showSettings = settings
         model.expanded = !collapsed
+        // chartMode 现在来自偏好；文档截图要可复现，所以两个模式都能显式指定
         if bars { model.chartMode = .bars }
+        if heat { model.chartMode = .heat }
         // 把余额压到阈值以下，用来验收低余额告警态（呼吸红边）
         if low { _ = model.simulateBalanceChange(-341.51) }
         // 强制峰谷，用来在同一时刻把两种单字价签都截出来验收
