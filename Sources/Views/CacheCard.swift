@@ -30,7 +30,7 @@ struct CacheCard: View {
                     trailing: model.usage?.scopeNote
                 )
 
-                if !model.hasUserToken {
+                if !model.canShowUsage {
                     Notice(
                         icon: "key.horizontal",
                         text: "token 用量走 platform.deepseek.com 私有接口，需要网页登录态令牌；sk- API Key 调不通这个接口。",

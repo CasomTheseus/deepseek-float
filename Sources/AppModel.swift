@@ -21,6 +21,28 @@ final class AppModel: ObservableObject {
     @Published private(set) var balanceError: String?
     @Published private(set) var usageError: String?
 
+    /// 当前来源下是否会有用量数据。
+    /// 视图里不要再直接用 `hasUserToken` 判断——本地日志源完全不需要令牌。
+    var canShowUsage: Bool {
+        switch usageSource {
+        case .none: return false
+        case .platform: return hasUserToken
+        case .localLog: return true
+        }
+    }
+
+    /// 当前来源是否提供真实金额（本地日志只有 token 数）
+    var usageHasCost: Bool { usage?.hasCost ?? false }
+
+    /// 用量卡片拿到空数据时的提示语，按来源给不同指引
+    var usageEmptyHint: String {
+        switch usageSource {
+        case .none: return "用量已关闭"
+        case .platform: return "需要平台令牌"
+        case .localLog: return "本机暂无 DSH 日志"
+        }
+    }
+
     @Published private(set) var isRefreshing = false
     @Published private(set) var lastRefresh: Date?
     /// 余额历史采样，用于估算消耗速率
@@ -30,6 +52,18 @@ final class AppModel: ObservableObject {
 
     // MARK: - 偏好（持久化到 UserDefaults）
     @Published var range: UsageRange = .today { didSet { persist(); requestUsageRefresh() } }
+    /// 用量来源。切换时必须清掉旧数据并重新取数——
+    /// 否则会把上一个来源的数字配上新来源的标签，正是要避免的那种混淆。
+    @Published var usageSource: UsageSource = .platform {
+        didSet {
+            guard oldValue != usageSource else { return }
+            persist()
+            usage = nil
+            monthlyUsage = nil
+            usageError = nil
+            requestUsageRefresh()
+        }
+    }
     @Published var chartMode: ChartMode = .heat { didSet { persist() } }
     @Published var refreshInterval: Double = 60 { didSet { persist(); restartTimer() } }
     @Published var opacity: Double = 0.94 { didSet { persist() } }
@@ -69,7 +103,8 @@ final class AppModel: ObservableObject {
 
     private let credentials = CredentialStore.shared
 
-    init(startAutomatically: Bool = true, withSampleData: Bool = true, sampleDaily: Bool = false) {
+    init(startAutomatically: Bool = true, withSampleData: Bool = true, sampleDaily: Bool = false,
+         sampleLocalSource: Bool = false) {
         loadPreferences()
         syncCredentialFlags()
         if startAutomatically {
@@ -81,7 +116,7 @@ final class AppModel: ObservableObject {
             refreshNotificationStatus()
             Task { await refresh(force: true) }
         } else if withSampleData {
-            installSampleData(daily: sampleDaily)
+            installSampleData(daily: sampleDaily, localSource: sampleLocalSource)
         }
     }
 
@@ -96,11 +131,17 @@ final class AppModel: ObservableObject {
 
     // MARK: - 示例数据（离屏渲染 / 预览用，不参与联网）
 
-    private func installSampleData(daily: Bool) {
+    /// - Parameter localSource: 生成「本地日志来源」形态的示例数据：
+    ///   没有金额、模型里含压缩摘要。用合成数据而不是真读日志，
+    ///   是为了让 docs/ 的截图里不出现真实用量数字。
+    private func installSampleData(daily: Bool, localSource: Bool = false) {
         hasAPIKey = true
         hasUserToken = true
         // 此时 loaded 仍为 false，didSet 里的 persist/联网都会被闸门挡住
         range = daily ? .last90d : .today
+        // 必须在造数据之前切来源：usageSource 的 didSet 会清空 usage，
+        // 放在后面会把刚造好的示例数据一并清掉（曾因此截出"正在读取用量…"）
+        if localSource { usageSource = .localLog }
         // 注意：这里不要覆盖 chartMode —— 它已经由 loadPreferences() 从偏好读出来了。
         // 之前强制设成 .heat，导致 demo 实例永远进不去柱状图，调试 C2 时白找半天。
         // 故意用一眼假的占位串。绝不能用真实 Key 的片段——
@@ -178,6 +219,21 @@ final class AppModel: ObservableObject {
         ]
         monthlyUsage = monthly
 
+        if localSource {
+            usage?.hasCost = false
+            usage?.cost = 0
+            usage?.scopeNote = "本机 DSH · \(range.title)"
+            // 真实日志源自带分模型；示例数据的分模型原本挂在 monthlyUsage 上，
+            // 这里搬进 usage，否则截图里会只剩一条压缩摘要（曾踩过）
+            var models = monthly.models
+            models.append(ModelUsage(model: "压缩摘要",
+                                     breakdown: TokenBreakdown(cacheHit: 0, cacheMiss: 490_900,
+                                                               output: 4_182, requests: 1),
+                                     cost: 0))
+            usage?.models = models
+            monthlyUsage = nil
+        }
+
         balanceHistory = [
             (now.addingTimeInterval(-6 * 3600), 346.12),
             (now.addingTimeInterval(-3 * 3600), 345.04),
@@ -195,6 +251,7 @@ final class AppModel: ObservableObject {
         static let alwaysOnTop = "alwaysOnTop"
         static let expanded = "expanded"
         static let showModels = "showModels"
+        static let usageSource = "usageSource"
         static let threshold = "lowBalanceThreshold"
         static let notifications = "notificationsEnabled"
         static let hideWhenIdle = "hideWhenIdle"
@@ -211,6 +268,9 @@ final class AppModel: ObservableObject {
         if d.object(forKey: Key.alwaysOnTop) != nil { alwaysOnTop = d.bool(forKey: Key.alwaysOnTop) }
         if d.object(forKey: Key.expanded) != nil { expanded = d.bool(forKey: Key.expanded) }
         if d.object(forKey: Key.showModels) != nil { showModels = d.bool(forKey: Key.showModels) }
+        if let raw = d.string(forKey: Key.usageSource), let source = UsageSource(rawValue: raw) {
+            usageSource = source
+        }
         if d.object(forKey: Key.threshold) != nil { lowBalanceThreshold = d.double(forKey: Key.threshold) }
         if d.object(forKey: Key.notifications) != nil { notificationsEnabled = d.bool(forKey: Key.notifications) }
         if d.object(forKey: Key.hideWhenIdle) != nil { hideWhenIdle = d.bool(forKey: Key.hideWhenIdle) }
@@ -227,6 +287,7 @@ final class AppModel: ObservableObject {
         d.set(alwaysOnTop, forKey: Key.alwaysOnTop)
         d.set(expanded, forKey: Key.expanded)
         d.set(showModels, forKey: Key.showModels)
+        d.set(usageSource.rawValue, forKey: Key.usageSource)
         d.set(lowBalanceThreshold, forKey: Key.threshold)
         d.set(notificationsEnabled, forKey: Key.notifications)
         d.set(hideWhenIdle, forKey: Key.hideWhenIdle)
@@ -320,13 +381,37 @@ final class AppModel: ObservableObject {
     }
 
     func refreshUsage(force: Bool = false) async {
+        let minGap: TimeInterval = force ? 1.0 : 20.0
+        if Date().timeIntervalSince(lastUsageFetch) < minGap, usage != nil { return }
+        lastUsageFetch = Date()
+
+        switch usageSource {
+        case .none:
+            usage = nil
+            monthlyUsage = nil
+            usageError = nil
+            return
+
+        case .localLog:
+            // 本地日志自带分模型，不需要月度接口
+            do {
+                usage = try await DSHLogSource.shared.snapshot(for: range)
+                usageError = nil
+            } catch {
+                usage = nil
+                usageError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+            monthlyUsage = nil
+            return
+
+        case .platform:
+            break
+        }
+
         guard hasUserToken else {
             usageError = nil
             return
         }
-        let minGap: TimeInterval = force ? 1.0 : 20.0
-        if Date().timeIntervalSince(lastUsageFetch) < minGap, usage != nil { return }
-        lastUsageFetch = Date()
 
         do {
             let snapshot = try await DeepSeekAPI.fetchWindowUsage(userToken: credentials.userToken, range: range)

@@ -26,6 +26,7 @@ enum ParserTests {
         peakSchedule()
         balanceDelta()
         simulatePath()
+        localLogUsage()
 
         print("")
         print(failures == 0 ? "结果：\(checks) 项断言全部通过。" : "结果：\(checks) 项断言中 \(failures) 项失败。")
@@ -334,6 +335,56 @@ enum ParserTests {
             check("makeUsageSnapshot 抛错", false, "\(error)")
             return nil
         }
+    }
+
+    // MARK: - DSH 本地日志源
+
+    /// 合成夹具。绝不能用真实会话日志做断言——那会把别人的对话内容写进测试。
+    private static func localLogUsage() {
+        let jsonl = #"""
+        {"type":"assistant/message","time":1791087639410,"data":{"usage":{"inputTokens":508,"cacheReadTokens":7168,"cacheWriteTokens":0,"outputTokens":701,"totalTokens":8377},"message":{"source":{"model":"deepseek-flash"}}}}
+        {"type":"assistant/message","time":1791091239410,"data":{"usage":{"inputTokens":1000,"cacheReadTokens":0,"outputTokens":500,"totalTokens":1500},"message":{"source":{"model":"deepseek-flash"}}}}
+        {"type":"compaction/summary","time":1791094839410,"data":{"usage":{"inputTokens":490900,"cacheReadTokens":0,"outputTokens":4182,"totalTokens":495082}}}
+        {"type":"assistant/message","time":1791098439410,"data":{"message":{"content":[]}}}
+        not-json-at-all
+
+        """#
+
+        let records = DSHLogSource.parse(jsonl: Data(jsonl.utf8))
+        check("日志行解析：只取带 usage 的记录", records.count == 3, "实际 \(records.count)")
+
+        if records.count == 3 {
+            check("命中取 cacheReadTokens", records[0].hit == 7168)
+            check("未命中取 inputTokens", records[0].miss == 508)
+            check("输出取 outputTokens", records[0].output == 701)
+            check("model 字段原样保留", records[0].model == "deepseek-flash")
+            check("缺 model 的按类型兜底为「压缩摘要」", records[2].model == "压缩摘要", records[2].model)
+            let expected = Date(timeIntervalSince1970: 1_791_087_639.410)
+            check("毫秒时间戳换算正确", abs(records[0].time.timeIntervalSince(expected)) < 1.0)
+            // 这条恒等式正是字段语义的判定依据，钉死在测试里
+            check("totalTokens 恒等式成立",
+                  records[0].hit + records[0].miss + records[0].output == 8377)
+        }
+
+        // 空桶补齐：稀疏数据也不能让步长失真，否则热力图会误判小时/天档位
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let hourly = DSHLogSource.bucketKeys(from: start,
+                                             to: start.addingTimeInterval(3 * 3600),
+                                             hourly: true)
+        check("小时桶数量正确", hourly.count == 4, "实际 \(hourly.count)")
+        check("小时桶步长恰为 3600 秒",
+              hourly.count == 4 && abs(hourly[1] - hourly[0] - 3600) < 0.5)
+
+        let daily = DSHLogSource.bucketKeys(from: start,
+                                            to: start.addingTimeInterval(3 * 86400),
+                                            hourly: false)
+        check("天桶数量正确", daily.count == 4, "实际 \(daily.count)")
+        check("天桶步长恰为 86400 秒",
+              daily.count == 4 && abs(daily[1] - daily[0] - 86400) < 0.5)
+
+        check("只有平台来源提供金额", UsageSource.platform.providesCost
+                                      && !UsageSource.localLog.providesCost
+                                      && !UsageSource.none.providesCost)
     }
 
     private static func check(_ label: String, _ passed: Bool, _ detail: String = "") {

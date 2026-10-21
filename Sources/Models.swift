@@ -73,6 +73,9 @@ struct UsageSnapshot: Equatable {
     var currency: String = "CNY"
     var totals = TokenBreakdown()
     var cost: Double = 0
+    /// 该来源是否提供真实金额。本地日志只有 token 数、没有钱，
+    /// 此时 cost 恒为 0 但**不能当成「0 元」展示**，所以单独用这个标志区分。
+    var hasCost: Bool = true
     var buckets: [UsageBucket] = []
     var models: [ModelUsage] = []
     var fetchedAt: Date = Date()
@@ -80,6 +83,41 @@ struct UsageSnapshot: Equatable {
     var scopeNote: String = ""
 
     var isEmpty: Bool { totals.isEmpty && models.isEmpty && buckets.isEmpty }
+}
+
+// MARK: - 用量来源
+
+/// 用量的取数来源。做成显式选择，是因为两条通路的**统计口径不同**：
+/// 平台接口是账户全量、官方账单口径；本地日志只有本机 DSH 发出的请求。
+/// 混在一起显示会让人误以为是一套数字。
+enum UsageSource: String, CaseIterable, Identifiable {
+    /// 平台令牌：platform.deepseek.com 用量接口，账户全量，含真实金额
+    case platform
+    /// DSH 本地日志：只覆盖本机 DSH 的请求，逐请求、无需令牌，但没有金额
+    case localLog
+    /// 不显示用量，只看余额
+    case none
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .platform: return "平台令牌"
+        case .localLog: return "DSH 本地日志"
+        case .none: return "不显示"
+        }
+    }
+
+    var caption: String {
+        switch self {
+        case .platform: return "账户全量 · 官方口径 · 含真实金额"
+        case .localLog: return "仅本机 DSH 请求 · 无需令牌 · 无金额"
+        case .none: return "只看余额"
+        }
+    }
+
+    /// 该来源是否提供真实金额
+    var providesCost: Bool { self == .platform }
 }
 
 // MARK: - 时间范围

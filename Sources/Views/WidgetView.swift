@@ -253,7 +253,7 @@ struct WidgetView: View {
 
                 Spacer(minLength: 0)
 
-                if model.hasUserToken, let totals = model.usage?.totals, !totals.isEmpty {
+                if model.canShowUsage, let totals = model.usage?.totals, !totals.isEmpty {
                     VStack(alignment: .trailing, spacing: 0) {
                         Text(Fmt.percent(totals.cacheHitRate))
                             .font(.ds(15, .semibold, rounded: true))
@@ -291,7 +291,8 @@ struct WidgetView: View {
     private var footer: some View {
         HStack(spacing: 7) {
             statusChip("API", ok: model.hasAPIKey && model.balanceError == nil)
-            statusChip("平台", ok: model.hasUserToken && model.usageError == nil)
+            statusChip(model.usageSource == .localLog ? "日志" : "平台",
+                       ok: model.canShowUsage && model.usageError == nil)
             Spacer(minLength: 0)
             if let when = model.lastRefresh {
                 Text(Fmt.relative(when))

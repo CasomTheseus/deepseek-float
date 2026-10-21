@@ -111,7 +111,7 @@ enum DeepSeekAPI {
         return try JSON.makeUsageSnapshot(
             amountData: amount.body,
             costData: cost?.body,
-            scopeNote: range.title
+            scopeNote: "平台账户 · \(range.title)"
         )
     }
 
@@ -132,7 +132,7 @@ enum DeepSeekAPI {
         return try JSON.makeUsageSnapshot(
             amountData: amount.body,
             costData: cost?.body,
-            scopeNote: "本月分模型"
+            scopeNote: "平台账户 · 本月分模型"
         )
     }
 

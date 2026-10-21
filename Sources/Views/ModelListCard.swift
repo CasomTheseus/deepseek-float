@@ -25,7 +25,7 @@ struct ModelListCard: View {
                 SectionLabel(text: "分模型", trailing: scope)
 
                 if models.isEmpty {
-                    Text(model.hasUserToken ? "暂无分模型数据" : "需要平台令牌")
+                    Text(model.canShowUsage ? "暂无分模型数据" : model.usageEmptyHint)
                         .font(.system(size: 10.5))
                         .foregroundStyle(DS.textTertiary)
                         .frame(maxWidth: .infinity, alignment: .center)

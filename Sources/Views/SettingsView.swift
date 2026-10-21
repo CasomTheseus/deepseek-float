@@ -120,29 +120,61 @@ struct SettingsView: View {
 
     private var tokenSection: some View {
         Card {
-            VStack(alignment: .leading, spacing: 7) {
-                SectionLabel(text: "② 平台令牌（查用量 / 缓存命中）", trailing: model.hasUserToken ? "已保存" : "可选")
+            VStack(alignment: .leading, spacing: 9) {
+                SectionLabel(text: "② 用量来源", trailing: model.usageSource.title)
 
-                secretField(placeholder: "粘贴 userToken", text: $tokenDraft, revealed: $revealToken)
-
-                HStack(spacing: 6) {
-                    pillButton("保存并同步", tint: DS.accent) {
-                        model.saveUserToken(tokenDraft)
-                        tokenDraft = ""
-                        flash("已保存，正在同步")
+                // 来源必须显式可选：两条通路的口径完全不同，
+                // 平台令牌是账户全量、官方账单；本地日志只有本机 DSH 的请求。
+                // 混着显示会让人把两套数字当成一套。
+                Picker("", selection: $model.usageSource) {
+                    ForEach(UsageSource.allCases) { source in
+                        Text(source.title).tag(source)
                     }
-                    pillButton("怎么获取？", tint: Color.white.opacity(0.14)) {
-                        openUsagePage()
-                    }
-                    Spacer(minLength: 0)
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
 
-                Text("用法：浏览器登录 platform.deepseek.com/usage → F12 控制台执行\nJSON.parse(localStorage.getItem('userToken')).value\n把结果粘到上面。它是网页登录态令牌，不是 sk- Key。")
+                Text(model.usageSource.caption)
                     .font(.system(size: 9))
                     .foregroundStyle(DS.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .lineSpacing(1.5)
-                    .textSelection(.enabled)
+
+                switch model.usageSource {
+                case .localLog:
+                    Text("读取本机 ~/.dsh/sessions 下的 DSH 会话日志，只统计这台机器用当前 Key 发出的请求。不需要平台令牌，也不会上传任何东西。\n注意：日志只有 token 数、没有金额；同一把 Key 在别处（手机、其他客户端）的调用不计入。\n依赖 zstd 命令行解压（brew install zstd）。")
+                        .font(.system(size: 9))
+                        .foregroundStyle(DS.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .lineSpacing(1.5)
+                        .textSelection(.enabled)
+
+                case .platform:
+                    secretField(placeholder: "粘贴 userToken", text: $tokenDraft, revealed: $revealToken)
+
+                    HStack(spacing: 6) {
+                        pillButton("保存并同步", tint: DS.accent) {
+                            model.saveUserToken(tokenDraft)
+                            tokenDraft = ""
+                            flash("已保存，正在同步")
+                        }
+                        pillButton("怎么获取？", tint: Color.white.opacity(0.14)) {
+                            openUsagePage()
+                        }
+                        Spacer(minLength: 0)
+                    }
+
+                    Text("用法：浏览器登录平台用量页 → F12 控制台执行\nJSON.parse(localStorage.getItem('userToken')).value\n把结果粘到上面。它是网页登录态令牌，不是 sk- Key。")
+                        .font(.system(size: 9))
+                        .foregroundStyle(DS.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .lineSpacing(1.5)
+                        .textSelection(.enabled)
+
+                case .none:
+                    Text("不显示用量，只保留余额。")
+                        .font(.system(size: 9))
+                        .foregroundStyle(DS.textTertiary)
+                }
             }
         }
     }

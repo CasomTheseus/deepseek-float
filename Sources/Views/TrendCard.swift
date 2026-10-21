@@ -22,7 +22,7 @@ struct TrendCard: View {
                 if model.chartMode == .bars {
                     barChart
                 } else {
-                    HeatmapView(buckets: buckets, hasToken: model.hasUserToken)
+                    HeatmapView(buckets: buckets, hasToken: model.canShowUsage)
                 }
             }
         }
@@ -111,7 +111,7 @@ struct TrendCard: View {
     private func emptyPlaceholder(height: CGFloat) -> some View {
         HStack {
             Spacer()
-            Text(model.hasUserToken ? "暂无数据" : "需要平台令牌")
+            Text(model.canShowUsage ? "暂无数据" : model.usageEmptyHint)
                 .font(.system(size: 10.5))
                 .foregroundStyle(DS.textTertiary)
             Spacer()
@@ -220,7 +220,7 @@ struct HeatmapView: View {
         if buckets.isEmpty {
             HStack {
                 Spacer()
-                Text(hasToken ? "暂无数据" : "需要平台令牌")
+                Text("暂无数据")
                     .font(.system(size: 10.5))
                     .foregroundStyle(DS.textTertiary)
                 Spacer()

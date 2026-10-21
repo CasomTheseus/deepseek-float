@@ -31,6 +31,12 @@ struct DeepSeekFloatApp {
             exit(ParserTests.run() == 0 ? 0 : 1)
         }
 
+        // 本地日志源：把真实 DSH 日志读一遍并打印汇总，用于验收取数是否正确
+        if arguments.contains("--logtest") {
+            await runLogTest()
+            exit(0)
+        }
+
         // 无头自检：不建窗口、不装菜单栏，跑完就退
         if arguments.contains("--selftest") {
             await SelfTest.run()
@@ -38,7 +44,7 @@ struct DeepSeekFloatApp {
         }
 
         // 离屏渲染：把面板画成 PNG。不依赖「屏幕录制」权限，用于验收排版。
-        //   --render out.png [--settings] [--collapsed] [--empty] [--daily] [--bars] [--low] [--bars|--heat] [--peak|--offpeak]
+        //   --render out.png [--settings] [--collapsed] [--empty] [--daily] [--bars] [--low] [--bars|--heat] [--peak|--offpeak] [--localsrc]
         if let index = arguments.firstIndex(of: "--render") {
             let path = index + 1 < arguments.count ? arguments[index + 1] : "widget.png"
             renderSnapshot(
@@ -47,6 +53,7 @@ struct DeepSeekFloatApp {
                 collapsed: arguments.contains("--collapsed"),
                 empty: arguments.contains("--empty"),
                 daily: arguments.contains("--daily"),
+                localSrc: arguments.contains("--localsrc"),
                 bars: arguments.contains("--bars"),
                 heat: arguments.contains("--heat"),
                 low: arguments.contains("--low"),
@@ -64,19 +71,56 @@ struct DeepSeekFloatApp {
         let delegate = AppDelegate(
             demo: arguments.contains("--demo"),
             peakOverride: arguments.contains("--peak") ? true
-                : (arguments.contains("--offpeak") ? false : nil)
+                : (arguments.contains("--offpeak") ? false : nil),
+            openSettings: arguments.contains("--settings")
         )
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
         app.run()
     }
 
+    /// 把真实 DSH 日志读一遍并打印汇总。
+    /// 断言只能用合成夹具（不能把真实会话内容写进测试），
+    /// 所以真实数据的口径要靠这个入口人工核对。
+    @MainActor
+    private static func runLogTest() async {
+        for range in [UsageRange.today, .last24h, .last7d, .last30d] {
+            do {
+                let snapshot = try await DSHLogSource.shared.snapshot(for: range)
+                let totals = snapshot.totals
+                print("── \(range.title) ──")
+                print("  命中 \(totals.cacheHit)  未命中 \(totals.cacheMiss)  输出 \(totals.output)  合计 \(totals.totalTokens)")
+                print("  命中率 \(String(format: "%.1f%%", totals.cacheHitRate * 100))  请求 \(totals.requests)")
+                print("  分桶 \(snapshot.buckets.count)  金额 \(snapshot.hasCost ? "有" : "无（符合预期）")")
+                let models = snapshot.models
+                    .map { "\($0.model)=\($0.breakdown.totalTokens)" }
+                    .joined(separator: "  ")
+                print("  模型 \(models.isEmpty ? "—" : models)")
+                if let first = snapshot.buckets.first, let last = snapshot.buckets.last,
+                   snapshot.buckets.count > 1 {
+                    let step = Int((last.time - first.time) / Double(snapshot.buckets.count - 1))
+                    print("  区间 \(stamp(first.time)) → \(stamp(last.time))  步长约 \(step) 秒")
+                }
+            } catch {
+                print("── \(range.title) ── 失败：\(error.localizedDescription)")
+            }
+            print("")
+        }
+    }
+
+    private static func stamp(_ epoch: Double) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter.string(from: Date(timeIntervalSince1970: epoch))
+    }
+
     /// 用示例数据把 `WidgetView` 画成 PNG（2 倍图）。
     /// 注意：离屏渲染拿不到 `NSVisualEffectView` 的真实模糊，背景会退化成渐变，
     /// 但排版、字号、颜色、图表都是真实结果。
     @MainActor
-    private static func renderSnapshot(to path: String, settings: Bool, collapsed: Bool, empty: Bool, daily: Bool, bars: Bool, heat: Bool, low: Bool, forcePeak: Bool, forceOffPeak: Bool) {
-        let model = AppModel(startAutomatically: false, withSampleData: !empty, sampleDaily: daily)
+    private static func renderSnapshot(to path: String, settings: Bool, collapsed: Bool, empty: Bool, daily: Bool, localSrc: Bool, bars: Bool, heat: Bool, low: Bool, forcePeak: Bool, forceOffPeak: Bool) {
+        let model = AppModel(startAutomatically: false, withSampleData: !empty,
+                             sampleDaily: daily, sampleLocalSource: localSrc)
         model.showSettings = settings
         model.expanded = !collapsed
         // chartMode 现在来自偏好；文档截图要可复现，所以两个模式都能显式指定

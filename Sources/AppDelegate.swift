@@ -19,9 +19,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `--peak` / `--offpeak`：强制峰谷状态，方便预览当前时段看不到的那种价签
     private let peakOverride: Bool?
 
-    init(demo: Bool = false, peakOverride: Bool? = nil) {
+    /// `--settings`：启动就打开设置页。离屏渲染画不出 AppKit 控件（Picker 会成 🚫），
+    /// 只能用实时抓帧验收，所以需要一个能直接进设置页的入口。
+    private let openSettings: Bool
+
+    init(demo: Bool = false, peakOverride: Bool? = nil, openSettings: Bool = false) {
         self.demo = demo
         self.peakOverride = peakOverride
+        self.openSettings = openSettings
         super.init()
     }
 
@@ -35,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ? AppModel(startAutomatically: false, withSampleData: true)
             : AppModel()
         model.peakOverride = peakOverride
+        if openSettings { model.showSettings = true }
         panelController = FloatingPanelController(model: model)
         statusController = StatusItemController(model: model, panelController: panelController)
 

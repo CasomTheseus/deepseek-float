@@ -169,6 +169,12 @@ struct BalanceCard: View {
                     Text(Fmt.moneyCompact(cost, currency: model.usage?.currency ?? info.currency))
                         .font(.ds(12, .medium, rounded: true))
                         .foregroundStyle(DS.textPrimary)
+                } else if model.usage != nil && !model.usageHasCost {
+                    // 本地日志源没有金额字段，写 "—" 会让人以为取数失败
+                    Text("不提供")
+                        .font(.ds(12, .medium, rounded: true))
+                        .foregroundStyle(DS.textTertiary)
+                        .help("当前用量来源是\(model.usageSource.title)，它只有 token 数、没有金额。命中率与 token 数见「缓存命中」卡。")
                 } else {
                     Text("—")
                         .font(.ds(12, .medium, rounded: true))
