@@ -274,7 +274,9 @@ struct WidgetView: View {
     private var peakTag: some View {
         let isPeak = model.isPeakNow
         return Text(isPeak ? "峰" : "谷")
-            .font(.system(size: 11, weight: .bold))
+            // 与余额数字同字号（19pt）：单个汉字在 11pt 时辨识度不够，
+            // 而这个信息需要一眼扫到，不能靠凑近看
+            .font(.ds(19, .semibold, rounded: true))
             .foregroundStyle(isPeak ? DS.peakTag : DS.offPeakTag)
             .accessibilityLabel(isPeak ? "高峰时段" : "空闲时段")
             .help(
