@@ -1,449 +1,344 @@
-# DeepSeek 悬浮窗 · DeepSeekFloat
+# DeepSeekFloat
 
-一个原生 macOS **桌面悬浮小窗**（不是菜单栏弹窗、也不是浏览器插件）：输入 DeepSeek API Key 即可看到账户余额；再补一个平台令牌，就能看到实时 token 用量、**缓存命中率**、消费金额与分模型明细。
+> 把 DeepSeek 的余额和用量，放在桌面上一直看得见。
+>
+> 输入 API Key 看余额；再补一个平台令牌，就能看到 token 用量、缓存命中率和分模型明细。
 
-无边框毛玻璃、永远置顶、可拖动、跨所有桌面空间、不进 Dock，菜单栏常驻余额。
+![macOS](https://img.shields.io/badge/macOS-14%2B-blue?style=flat-square)
+![Apple Silicon](https://img.shields.io/badge/arch-arm64-lightgrey?style=flat-square)
+![Swift](https://img.shields.io/badge/Swift-6.1-orange?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
-![概览](docs/screenshot-overview.png)
+DeepSeekFloat 由两块组成：一个无边框悬浮面板，显示余额、缓存命中和用量趋势；一个菜单栏图标，
+常驻余额并收纳显隐、刷新、设置、置顶、开机自启。全部是原生 Swift，约 6000 行，
+不需要完整 Xcode，Xcode Command Line Tools 就能编译。
 
----
+[安装](#安装与平台状态) · [配置](#配置) · [常见问题](#常见问题) · [命令行](#命令行与调试) · [视觉细节清单](docs/视觉细节候选清单.md)
 
-## 一、先说清楚一件事：**API Key 查不到用量**
+## 你可以做什么
 
-这不是配置问题，是接口设计如此。DeepSeek 目前只有两个数据面：
+| 能力 | 内容 |
+| --- | --- |
+| 余额 | 总额、充值 / 赠送拆分、可用状态、按当前速率估算的可用天数 |
+| 峰谷时段 | 按北京时间判定，带切换倒计时；收起态在余额右边显示红「峰」绿「谷」 |
+| 缓存命中 | 双同心环（外环命中率、内环输出占比）、三段构成条、请求次数、分级徽章 |
+| 用量趋势 | 今日 / 24 小时 / 7 天 / 30 天 / 本月 / 90 天，柱状与热力两种画法 |
+| 分模型 | 每个模型的 token、费用，以及每百万 token 平均费用 |
+| 低余额提醒 | 面板呼吸红边加一声提示音，不走系统通知（原因见常见问题） |
+| 菜单栏 | 常驻余额；点开可显隐、刷新、设置、置顶、开机自启、退出 |
 
-| 数据 | 接口 | 认什么凭据 | 状态 |
-|---|---|---|---|
-| 账户余额（总额 / 充值 / 赠送 / 可用状态） | `GET api.deepseek.com/user/balance` | `sk-` API Key | **官方公开接口**，[文档在此](https://api-docs.deepseek.com/zh-cn/api/get-user-balance/) |
-| token 用量 / 缓存命中 / 消费 / 分模型 | `platform.deepseek.com/api/v0/usage/*` | 网页登录态 `userToken` | **网页私有接口**，未公开、可能随时变 |
+用量和费用有两个来源，口径不一样：平台接口是账户全量、带真实金额；本机 DSH 日志只覆盖这台机器
+发出的请求、没有金额。哪个都能用，但数字不能混着看，所以做成了显式选择。消耗速率是余额随时间的
+下滑采样，只在 App 运行期间积累，属于估算，不是账单。
 
-拿 `sk-` Key 去调平台用量接口，会稳定返回业务错误码 `40003 invalid token`。两个同生态的开源实现（[dsh-usage](https://github.com/Huasecc/dsh-usage)、[dsh-deepseek-usage](https://github.com/AzureHalcyon/dsh-deepseek-usage)）都踩过同一个坑，结论一致。
+## 快速开始
 
-所以本工具做成**两条互相独立的通路**，任意一条失败都不影响另一条：
+需要 macOS 14 以上、Apple Silicon，以及 Xcode Command Line Tools。
 
-- **通路 ①（必需，10 秒配好）**：粘贴 `sk-` Key → 立刻有余额、可用状态、低余额告警、消耗速率与可用天数估算。
-- **通路 ②（可选，1 分钟配好）**：粘贴平台 `userToken` → 才有 token 用量、缓存命中率、消费、分模型。
-
-只配 ① 也能正常用，只是用量卡片会明确告诉你缺什么，而不是假装有数据。
-
----
-
-## 二、安装与运行
-
-**环境要求**：macOS **14+** / Apple Silicon。只需要 Xcode Command Line Tools（`xcode-select --install`），**不需要完整 Xcode**——本机实测 Swift 6.1.2 + CommandLineTools 可直接编译。
-
-> 部署目标从 13.0 提到了 **14.0**，因为用到了 `contentTransition(.numericText())`、`KeyframeAnimator`、`symbolEffect` 等 macOS 14 才有的动效 API（这些都已在本机实测编译通过）。macOS 26 的 Liquid Glass 材质用不了——CommandLineTools 附带的 SDK 是 15.5，不含相关符号，需要装完整 Xcode 26。
-
-```bash
-cd DeepSeekFloat
-
-./build.sh install   # 编译 + 安装到 /Applications + 启动（正式用法）
-./build.sh status    # 查看安装 / 运行 / 开机自启 / 通知权限 / 凭据状态
-./build.sh uninstall # 卸载；加 --purge 连凭据与偏好一起删
-
-./build.sh run       # 编译后从 build/ 启动（开发用，不装）
-./build.sh test      # 编译并跑全部 76 项断言
-./build.sh package   # 生成可分发的 zip（本机自用其实不需要）
-./build.sh icon      # 重新生成 Resources/AppIcon.icns
-./build.sh clean     # 清理 build/
+```sh
+git clone https://github.com/CasomTheseus/deepseek-float.git
+cd deepseek-float
+./build.sh install
 ```
 
-`install` 做的事：编译 → 退掉正在运行的旧实例 → `ditto` 到 `/Applications`（保留签名）→ 去隔离属性 → `lsregister` 主动登记 LaunchServices → 校验签名 → `open` 启动。
+1. 装完会自动启动，面板出现在屏幕右上角，菜单栏同时多一个余额。
+2. 点面板右上角齿轮，第 ① 栏粘贴 `sk-` API Key，点「保存并测试」。
+3. 想要用量数据，第 ② 栏选一个来源（默认「平台令牌」），按下面「配置」填。
 
-**为什么必须用 `install` 而不是 `run`**：`SMAppService`（开机自启）要求系统认得这个 bundle，从 `build/` 里跑会直接报 `系统找不到该 App`。已实测：装到 `/Applications` 后注册/注销都能成功。
+`install` 会编译、装到 `/Applications`、然后启动。其它子命令：
 
-卸载：`./build.sh uninstall` 会先注销开机自启再删 App（顺序反了会留下一个每次开机都失败的登录项）；凭据与偏好默认保留，要清干净加 `--purge`。
+```sh
+./build.sh run          # 从 build/ 直接跑，不安装
+./build.sh status       # 安装、运行、开机自启、凭据状态
+./build.sh uninstall    # 卸载；加 --purge 连凭据和偏好一起删
+./build.sh test         # 89 项断言
+```
 
-产物是 `build/DeepSeekFloat.app`（**ad-hoc 签名**，约 2.9 MB）。因为是自己编译的，没有隔离属性，双击不会被 Gatekeeper 拦。
+必须装到 `/Applications`。开机自启走 `SMAppService`，只认登记过的 bundle，
+从 `build/` 里跑会报「系统找不到该 App」。
 
----
+> 凭据存在 `~/Library/Application Support/DeepSeekFloat/credentials.json`，目录 0700、文件 0600。
+> 没有任何遥测，只连 `api.deepseek.com` 和 `platform.deepseek.com`，外加可选的本机 DSH 日志。
 
-## 三、首次配置
+## 安装与平台状态
 
-### ① API Key（必需）
+| 项目 | 状态 |
+| --- | --- |
+| macOS 14 及以上 | 支持，本机 macOS 26.3 实测 |
+| macOS 13 及更早 | 不支持。用了 `contentTransition(.numericText())`、`KeyframeAnimator` 这些 14 才有的动效 API |
+| Apple Silicon | 支持 |
+| Intel | 不支持。改 `build.sh` 里的 `SDK_TARGET` 为 `x86_64-apple-macos14.0` 可自行编译，我没测过 |
+| macOS 26 的 Liquid Glass | 用不了。CommandLineTools 带的 SDK 是 15.5，没有相关符号，要装完整 Xcode 26 |
+| 签名分发 | 没有。ad-hoc 签名，只在本机编译安装，没有 release 和 Homebrew |
+| 系统通知 | 拿不到权限，见常见问题 |
+| 开机自启 | 支持，前提是装到 `/Applications` |
 
-1. 到 [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) 创建一个 `sk-` 开头的 Key；
-2. 悬浮窗 → 齿轮图标 → 第 ① 栏粘贴 → **保存并测试**。
+## 配置
 
-也可以不手输：第 ① 栏有 **「从 DSH 导入」** 按钮，会读取本机 DeepSeek Harness 的 `~/.dsh/.credentials.yaml` 里已有的 `DEEPSEEK_API_KEY` 并复用（只读，不写回 DSH）。
+### API Key
 
-### ② 用量来源（三选一，默认「平台令牌」）
+在 platform.deepseek.com 建一个 `sk-` Key，设置页第 ① 栏粘贴，点「保存并测试」。
 
-用量有三条取数路径，**统计口径不同**，所以做成显式选择而不是自动混用：
+不想手输的话，「从 DSH 导入」会读本机 `~/.dsh/.credentials.yaml` 里已有的 Key，只读不写回。
 
-| 来源 | 覆盖范围 | 金额 | 需要令牌 |
-|---|---|---|---|
-| **平台令牌** | 账户全量，官方账单口径 | ✅ 真实金额 | 需要 `userToken` |
-| **DSH 本地日志** | 仅本机 DSH 用当前 Key 发出的请求 | ❌ 无金额 | 不需要 |
-| **不显示** | 只看余额 | — | 不需要 |
+### 用量来源
 
-当前来源会标在缓存卡与分模型卡右上角（如「本机 DSH · 今日」），底栏徽章也会跟着变成「日志」。
+设置页第 ② 栏，三选一：
 
-#### 平台令牌
+| 来源 | 范围 | 金额 | 需要令牌 |
+| --- | --- | --- | --- |
+| 平台令牌 | 账户全量，官方账单口径 | 有 | 要 `userToken` |
+| DSH 本地日志 | 只算本机 DSH 用当前 Key 发出的请求 | 无 | 不要 |
+| 不显示 | 只看余额 | — | 不要 |
 
-1. 浏览器登录 <https://platform.deepseek.com/usage>；
-2. 按 `F12` 打开控制台，执行：
+当前来源会标在缓存卡和分模型卡右上角，比如「本机 DSH · 今日」，底栏徽章也会跟着变成「日志」。
 
-   ```js
-   JSON.parse(localStorage.getItem('userToken')).value
-   ```
+**平台令牌**：登录 platform.deepseek.com/usage，F12 控制台执行
+`JSON.parse(localStorage.getItem('userToken')).value`，把结果粘过来。
+整串 `{"value":"…","expireAt":…}` 直接粘也行，会自动剥壳。
 
-3. 复制输出，粘贴到悬浮窗设置页第 ② 栏 → **保存并同步**。
+它是网页登录态，等价于账户读权限，别在公用电脑上用。
 
-粘贴时可以直接粘 `{"value":"…","expireAt":…}` 整串，程序会自动剥壳。令牌以 **0600 权限**保存在本机，重启自动读取；只有平台登出/过期时才需要重新获取。
+另外它是**账户**作用域。如果你用的 Key 是别人给的、自己登录的是另一个账户，这个来源给出的用量
+跟那把 Key 没关系。这种就用下面那个。
 
-> `userToken` 是**网页会话凭证**，等价于登录态。它只发往 `platform.deepseek.com`，不会发给任何第三方。请勿在公用电脑上使用。
->
-> 它属于**账户**作用域：如果你用的 API Key 是别人给的、而你登录的是自己的账户，这个来源返回的用量与那把 Key **无关**。这种场景请改用「DSH 本地日志」。
+**DSH 本地日志**：读 `~/.dsh/sessions` 下的会话日志，按请求统计本机 DSH 用当前 Key 发的调用。
+不需要令牌，也不上传。需要 `brew install zstd`（系统不带 zstd，SDK 里也没有 libzstd）。
 
-#### DSH 本地日志
+只覆盖 DSH 的流量。同一把 Key 在手机或其他客户端的调用不在这份日志里。
 
-读 `~/.dsh/sessions/**/session*.jsonl.zstd`，按请求统计本机 DSH 用当前 Key 发出的调用。
-
-- **不需要任何令牌**，也不会上传数据；补齐了「别人给的 Key」这个场景。
-- 只覆盖 DSH 的流量：同一把 Key 在手机、其他客户端的调用**不计入**。
-- **没有金额**：日志只有 token 数，所以「消耗」一栏会显示「不提供」，
-  缓存命中卡只给命中率与 token 数。这是刻意的——按价目表估算出来的数字会误导。
-- 依赖 `zstd` 命令行解压（`brew install zstd`）。系统不带 zstd，SDK 里也没有 `libzstd`，
-  所以找不到可执行文件时该来源会直接报错而不是静默降级。
-
-字段语义不是猜的：对全部真实记录验证过恒等式
+字段含义是验出来的，不是猜的。对全部真实记录跑
 
 ```
 totalTokens == inputTokens + cacheReadTokens + outputTokens
 ```
 
-由此确定 `inputTokens` 是**未命中**、`cacheReadTokens` 是**命中**、`outputTokens` 是输出
-（`cacheWriteTokens` 恒为 0，DeepSeek 没有显式缓存写入）。压缩摘要这类调用没有模型归属，
-会单独显示为「压缩摘要」而不是含糊的「未知模型」。
+都成立，所以 `cacheReadTokens` 是命中、`inputTokens` 是未命中、`outputTokens` 是输出。
+压缩摘要这类调用没有模型归属，单独显示成「压缩摘要」。这条恒等式也写进了断言，
+DSH 的日志格式将来变了会立刻暴露。
 
----
+## 截图
 
-## 四、界面
+截图来自 `--demo` 的示例数据（「本地日志来源」那张用 `--localsrc`），面板里的余额、用量、模型
+都是合成的，没有使用真实凭据或真实账单。设置页那张是实时抓帧而不是离屏渲染，因为
+`ImageRenderer` 画不出 AppKit 控件，Picker 和输入框会被画成 🚫。
 
-| 展开态（默认） | 收起态 |
-|---|---|
-| ![概览](docs/screenshot-overview.png) | ![收起](docs/screenshot-compact.png) |
+| 展开态 | 收起态 |
+| --- | --- |
+| ![展开](docs/screenshot-overview.png) | ![收起](docs/screenshot-compact.png) |
 
-| 设置页 | 未配置引导 |
-|---|---|
+| 设置页 | 没配置凭据时 |
+| --- | --- |
 | ![设置](docs/screenshot-settings.png) | ![引导](docs/screenshot-onboarding.png) |
 
-- **余额卡**：大字余额 + 可用状态灯 + 充值/赠送拆分 + **峰时/闲时标识**（附切换倒计时）+ 所选时间范围的消耗 + 按当前速率估算的可用天数。
-- **收起态峰谷价签**：余额右侧一个单字标记——红 **峰** = 高峰原价，绿 **谷** = 空闲五折。收起形态是常驻可见的那一面，所以价格档位必须一眼能读到，它直接决定「现在跑批划不划算」。悬停可看切换倒计时。
-
 | 高峰时段 | 空闲时段 |
-|---|---|
+| --- | --- |
 | ![峰](docs/tag-peak.png) | ![谷](docs/tag-offpeak.png) |
-- **用量来源**：缓存命中 / 趋势 / 分模型三张卡的右上角会标出当前来源（如「本机 DSH · 今日」「平台账户 · 本月」）。来源不同，口径不同——这张截图用的是「DSH 本地日志」源，所以「90天消耗」显示「不提供」，而模型里多出一条「压缩摘要」。
 
-  ![本地日志来源](docs/screenshot-local-source.png)
+用「DSH 本地日志」做来源时，消耗那一栏是「不提供」，模型里会多一条「压缩摘要」：
 
-- **缓存命中卡**：**双同心环**（外环命中率、内环输出占比）+ 命中/未命中/输出三段构成条 + 总 token + 请求次数 + 命中率分级徽章（≥90% 亮青绿加外发光）。
-- **用量趋势卡**：今日 / 24小时 / 7天 / 30天 / 本月 / 90天 切换，**柱状 / 热力双模式**。热力图会按拿到的数据粒度自适应——小时级数据渲染成 24 格小时热力条，天级数据渲染成「星期 × 周」贡献图（带星期轴与日期区间）。
-- **分模型卡**：每个模型的 token、费用，以及**每百万 token 平均费用**（从真实账单反推，跨模型可比）。
-- **底栏**：API 通路 / 平台通路各自是否正常，以及上次更新时间。
+![本地日志来源](docs/screenshot-local-source.png)
 
-### 视觉细节
+## 常见问题
 
-第一批共 12 条微交互，都是可关可留的独立实现：
+### 为什么 API Key 查不到缓存命中和用量？
 
-| 编号 | 效果 |
-|---|---|
-| A1 | 余额变化时从卡片右上角飘出红色 `−¥0.05` 气泡，上浮淡出；充值则绿色 `+¥100.00` |
-| A2 | 余额数字滚动（旧值上推、新值下滚） |
-| A3 | 数字在变化瞬间染红/绿，320ms 后回落 |
-| A5 | 请求进行中，状态点向外扩散一圈会消失的光环 |
-| B3 | 命中率分级：≥90% 亮青绿 + 外发光 + 图标弹跳，<55% 转红 |
-| B4 | 双同心环，一屏看两个比例 |
-| C1 | 热力图（见上） |
-| D1 | 极细噪点纹理，消除大面积渐变的塑料感 |
-| D2 | 卡片上边缘高光 + 下边缘微反光的渐变描边 |
-| D5 | 背景两团品牌色极光的 22 秒漂移呼吸（面板隐藏时自动停住） |
-| E1 | 全部数字等宽，刷新时布局不抖 |
-| F3 | 保存/同步成功时弹出一枚对勾 |
+不是配置问题，是接口设计。余额接口认 `sk-` Key，用量接口认网页登录态 `userToken`，
+拿 Key 去调用量接口稳定返回 `40003 invalid token`。
 
-完整候选清单（含尚未实现的 20 条）见 [docs/视觉细节候选清单.md](docs/视觉细节候选清单.md)。
+另外两个同生态的实现（[dsh-usage](https://github.com/Huasecc/dsh-usage)、
+[dsh-deepseek-usage](https://github.com/AzureHalcyon/dsh-deepseek-usage)）踩的是同一个坑，
+结论一样。
 
-**动画验收留档**（由 `kill -USR1` 抓帧生成，见下方「抓动画中间帧」）：
+这个接口没公开，DeepSeek 随时可能改。解析器是按语义递归抓的，配了夹具测试，
+形状微调不会直接把面板打空；但路径和字段名一起大改还是得跟着改。
 
-| 收起态 | 展开态 |
-|---|---|
-| `docs/anim-collapsed-t010/t045/t110.png` —— 红色气泡从余额右侧弹出、上浮、消失 | `docs/anim-expanded-t010/t045/t110.png` —— 卡片右上角气泡 + 余额数字色闪 |
+### 为什么「消耗」显示「不提供」？
 
-窗口行为：拖动**标题区**移动；左上箭头收起成一行；齿轮进设置；刷新按钮立即拉取。位置、展开状态、刷新间隔、背景浓度都会记住。
+因为当前来源是「DSH 本地日志」，那份日志里只有 token 数，没有金额。
 
-**关于「窗口永远置顶」**：
+本来可以按官方价目乘一下算出来，但价目会变，而且按峰谷分档算出来的数字会显得比实际精确。
+「命中率 + token 数」是日志里的一手事实，不需要任何假设，所以这里不给估值。
+要看真实金额就切到「平台令牌」。
 
-- **开**（默认）：窗口层级 `floating`，压在普通窗口之上，这正是桌面挂件想要的。
-- **关**：窗口层级降回 `normal`，并**主动送到同层末尾**，会被其他窗口盖住。
+### 缓存命中率怎么算？还有哪些容易算错的地方？
 
-> 关掉置顶后窗口可能被全屏应用完全遮住。要把它找回来：菜单栏 →「设置…」，或者点两次「显示 / 隐藏悬浮窗」。这不是 bug，而是「不置顶」的定义；之所以要主动 `orderBack`，是因为实测发现只要不主动送下去，这个 accessory app 的非激活面板**不会**在别的 App 激活时自动落到后面——`level = normal` 时它依然压在整屏 Safari 之上，等于开关没效果。
+- 命中率 = 命中 ÷ (命中 + 未命中)，只算输入侧。DeepSeek 的命中价和未命中价差一个数量级，
+  这个比例比总 token 更能说明钱花得值不值
+- 月度接口里 `total` 是全月总账、`days` 是同一批数据按天切的明细，相加会翻倍
+- 费用接口的 `usage` 数组里混着 `REQUEST`（次数），算金额时得排除
+- 平台按 UTC 切日，所以「今日」走带 `start/end/tz` 的窗口接口，
+  否则 GMT+8 的 0 点到 8 点会被算进昨天
+- 每百万 token 平均费用 = 实际费用 ÷ 实际 token × 100 万，从账单反推，不假设单价
 
-菜单栏：常驻显示余额（低于阈值加 `⚠︎`），左键打开菜单——显隐悬浮窗、立即刷新、设置、置顶开关、开机自启、退出。
+### 为什么系统通知拿不到权限？
 
----
+ad-hoc 签名的限制，不是配置问题。几个证据：
 
-## 五、命令行与自动化
+- App 内自报「通知权限：被拒绝」，但 `add()` 不报错，属于静默失败
+- 本 App 的 bundle id 在 `com.apple.ncprefs.plist` 里根本没有记录，
+  所以「系统设置 → 通知」里不会列出来，手动也打不开
+- 换一个全新的 bundle id 重新 ad-hoc 签名安装，一样被拒
 
-```bash
+要真修好只能给 App 一个 Apple 签发的证书，本机自用不值得。
+
+所以低余额提醒改成了不需要权限的通道：面板呼吸红边（琥珀色偏低，红色耗尽）加一声提示音。
+窗口本来就常驻可见，比一条容易被错过的横幅可靠。
+
+### 关掉「窗口永远置顶」之后窗口找不到了？
+
+这是「不置顶」的定义，不是 bug。它会掉到别的窗口后面，包括全屏应用。
+
+找回来：菜单栏 →「设置…」，或者点两次「显示 / 隐藏悬浮窗」。
+
+切换时是主动 `orderBack` 把窗口送下去的。不这么做的话，这个 accessory app 的非激活面板
+在别的 App 激活时并不会自动落到后面，`level = normal` 时它依旧压在整屏 Safari 上面，
+等于开关没效果。这点专门测过。
+
+### 为什么不用钥匙串存凭据？
+
+因为 ad-hoc 签名每次重新编译 cdhash 都会变，钥匙串 ACL 会把新构建当成陌生程序，
+反复弹窗甚至拒绝读取。凭据改成 0600 的普通文件，设置页有清除按钮。
+
+### 峰谷时段什么时候会看错？
+
+峰谷按官方定义判定：北京时间周一到周五 9:00–12:00、14:00–18:00 是高峰，其余时段空闲，
+空闲价是高峰价的一半。跟本机时区无关。
+
+已知的近似是中国法定节假日。离线没法可靠判断，所以节假日当天会被显示成高峰。
+错得偏保守，不会让你误以为便宜。
+
+### 有哪些没做的？
+
+- 只读不写，没有预算硬闸，也不会自动充值
+- 同时只允许一个实例，重复启动会自己退出
+- 没有 CI。断言只在本机跑通，没有跨机器验证过
+- 没有 release 和 Homebrew，也没有签名分发
+
+## 命令行与调试
+
+```sh
 APP=build/DeepSeekFloat.app/Contents/MacOS/DeepSeekFloat
 
-# 接口自检：验证两条通路到底通不通（不打印任何密钥）
-DSF_API_KEY=sk-xxx $APP --selftest
-DSF_USER_TOKEN=xxx  $APP --selftest
+DSF_API_KEY=sk-xxx $APP --selftest    # 联网自检两条通路，不打印密钥
+$APP --parsetest                      # 89 项断言
+$APP --logtest                        # 读真实 DSH 日志打汇总
 
-# 自检断言：两族响应形状 + 峰谷时段边界，共 57 项
-$APP --parsetest     # 89 项断言（离线夹具）
-$APP --logtest      # 读真实 DSH 日志并打印汇总
-
-# 离屏渲染排版快照（不需要「屏幕录制」权限）
 $APP --render out.png [--settings] [--collapsed] [--empty] [--daily]
-                     [--bars|--heat] [--low] [--peak|--offpeak] [--localsrc]
+                      [--bars|--heat] [--low] [--peak|--offpeak] [--localsrc]
 
-# 窗口几何探针（不需要额外权限）
-swift Tools/WindowProbe.swift DeepSeek
-
-# 脚本触发一次立即刷新（SIGHUP 被接管为「刷新」，不会终止进程）
-kill -HUP $(pgrep -x DeepSeekFloat)
-
-# 让正在运行的 App 自己投一条测试通知（通知链路端到端验证）
-kill -USR2 $(pgrep -x DeepSeekFloat)
-
-# 切换一次「窗口永远置顶」，结果写入 /tmp/dsf-top-report.txt
-# （这个开关必须动态验证：菜单栏点不到，而改偏好再启动只能测初始状态）
-kill -WINCH $(pgrep -x DeepSeekFloat)
-
-# 开机自启 / 通知权限的真实状态（安装脚本与人工核查都用它）
-/Applications/DeepSeekFloat.app/Contents/MacOS/DeepSeekFloat --login-item status
-/Applications/DeepSeekFloat.app/Contents/MacOS/DeepSeekFloat --notify-status
-/Applications/DeepSeekFloat.app/Contents/MacOS/DeepSeekFloat --notify-test
+kill -HUP $(pgrep -x DeepSeekFloat)    # 触发一次刷新
+kill -USR1 $(pgrep -x DeepSeekFloat)   # 抓动画 0.10 / 0.45 / 1.10 秒三帧
+kill -USR2 $(pgrep -x DeepSeekFloat)   # 让 App 自己发一条测试通知
+kill -WINCH $(pgrep -x DeepSeekFloat)  # 切一次置顶，结果写 /tmp/dsf-top-report.txt
 ```
 
-> `--notify-status` / `--notify-test` 从终端直接执行时**结果不可信**：终端的子进程不是 LaunchServices 登记的 App 实例，`usernotificationd` 会回一个合成的结果。要判断通知是否真的可用，用 `kill -USR2` 让 App 自己发（它会写一份诊断到 `/tmp/dsf-notify-report.txt`），或直接看设置页。
+`--demo` 用示例数据跑界面，不联网也不读真实凭据。加 `--peak` 或 `--offpeak` 能强制显示另一种价签，
+不然红「峰」得等到工作日 9 点。
 
-```bash
-# 用示例数据启动 GUI（不联网、不读真实凭据），用于录屏 / 截图 / 抓动画帧
-$APP --demo
+环境变量也能给凭据：`DEEPSEEK_API_KEY` / `DSF_API_KEY`，`DEEPSEEK_USER_TOKEN` / `DSF_USER_TOKEN`。
+界面保存的值优先。
 
-# 预览另一种峰谷价签。价签只在对应时段出现，
-# 比如空闲时段想看红「峰」，否则要等到次日 9:00
-$APP --demo --peak        # 强制显示高峰
-$APP --demo --offpeak     # 强制显示空闲
-```
+这些信号入口是为了绕开两个问题。一是余额气泡只活 1.9 秒，真实扣费又是分钟级的，干等等不到。
+二是本机没有屏幕录制权限，`screencapture` 直接报 `could not create image from display`，
+`ImageRenderer` 只能出静态首帧。所以 `LiveCapture` 直接渲染自己的视图层级，不需要任何授权。
 
-> 预览实例和常驻实例用的是同一个 bundle id，会被单实例守卫挡掉。
-> 先退出正在运行的悬浮窗，或直接从命令行启动预览实例。
+## 参考与致谢
 
-**调试/验收入口**：余额变化气泡只存在约 1.9 秒，而真实扣费是分钟级的，光靠等很难观察到。菜单栏里有两项测试入口，可以随时手动触发，不必花钱：
+没 fork 任何仓库。接口约定是从这几个实现里交叉验出来的：
 
-- **模拟一次余额扣费（测试气泡）** → 红色 `−¥0.07` 气泡 + 数字滚动 + 变红
-- **模拟一次充值（测试绿色气泡）** → 绿色 `+¥100.00` 气泡 + 变绿
+- [KAPAIJUN/deepseek-usage-monitor](https://github.com/KAPAIJUN/deepseek-usage-monitor) —
+  同样是 Swift + CommandLineTools 的菜单栏挂件，验证了工具链可行
+- [Huasecc/dsh-usage](https://github.com/Huasecc/dsh-usage) —
+  `usage/by_api_key/*` 的窗口接口和 WAF 请求头
+- [AzureHalcyon/dsh-deepseek-usage](https://github.com/AzureHalcyon/dsh-deepseek-usage) —
+  `total`/`days` 和 `REQUEST` 的处理，还有 `usage/export` 的 CSV 列名
 
-**抓动画中间帧**（本机没有「屏幕录制」授权时唯一的验收手段）：
+想要菜单栏版或者网页内面板，上面几个可以直接用。
 
-```bash
-# 注入一次扣费，并在动画的 0.10s / 0.45s / 1.10s 各抓一帧
-kill -USR1 $(pgrep -x DeepSeekFloat)   # → /tmp/dsf-anim-t010.png / t045 / t110
-```
-
-`LiveCapture` 渲染的是**本进程自己的**视图层级，因此不需要任何系统授权。终端里 `screencapture` 会直接报 `could not create image from display`，而 `ImageRenderer` 只能出静态首帧——两者都验证不了"动画到底跑没跑"，这个探针就是为此存在的。
-
-**环境变量回退**（不想写配置文件时用）：
-
-| 变量 | 作用 |
-|---|---|
-| `DEEPSEEK_API_KEY` / `DSF_API_KEY` | 余额通路的 Key |
-| `DEEPSEEK_USER_TOKEN` / `DSF_USER_TOKEN` | 用量通路的平台令牌 |
-
-凭据优先级：界面保存的值 > 环境变量。文件模式则读取 `~/Library/Application Support/DeepSeekFloat/credentials.json`。
-
----
-
-## 六、数据口径（容易踩的坑）
-
-1. **缓存命中率** = `命中 ÷ (命中 + 未命中)`，只算输入侧。DeepSeek 的命中价与未命中价差一个数量级，这个比例比「总 token」更能说明钱花得值不值。
-2. **`total` 与 `days` 不能相加**。月度接口里 `total` 是全月总账、`days` 是同一批数据按天切的明细；两者相加会**翻倍**。解析器对此有专门的规则与回归断言。
-3. **`REQUEST` 不是钱**。费用接口的 `usage` 数组里混着 `REQUEST`（次数），算金额时必须排除，否则费用会被次数污染。
-4. **今日按本地时区 0 点起算**。平台按 UTC 切分日数据，所以「今日」走的是带 `start/end/tz` 的窗口接口，而不是月度接口的日聚合——否则 GMT+8 的 0:00–8:00 会被算到「昨天」。
-5. **消耗速率是估算**。它来自余额随时间的下滑采样，只在 App 运行期间积累；重启后重新开始。真正的官方口径永远是平台的用量页。
-6. **峰谷时段按官方定义、与你的时区无关**。官方「模型 & 价格」页注 2 原文：*「空闲时段价格为高峰时段价格的一半。北京时间周一至周五（不含中国法定节假日）9:00-12:00、14:00-18:00 为高峰时段；其余时段，包括周末及中国法定节假日全天均为空闲时段。」* 本工具据此判定并给出切换倒计时。**已知近似**：中国法定节假日无法离线可靠判定，节假日当天会被显示成高峰（偏保守，不会让你误以为便宜）。这条口径有 20 项边界断言覆盖，含跨周末跳转。
-7. **每百万 token 平均费用**是 `实际费用 ÷ 实际 token × 100万`，纯从账单数据反推，不依赖任何单价假设，所以跨模型、跨时段可比。
-
----
-
-## 七、安全与隐私
-
-- 只与 `api.deepseek.com`、`platform.deepseek.com` 通信，无遥测、无第三方。
-- 两个凭据存在 `~/Library/Application Support/DeepSeekFloat/credentials.json`，目录 `0700`、文件 `0600`。
-- **没有用钥匙串**，这是刻意的：本 App 以 ad-hoc 签名分发，每次重新编译 cdhash 都会变，钥匙串 ACL 会把新构建当成陌生程序反复弹窗甚至拒绝读取。同为本地小工具的同生态实现（`dsh-usage` 的 `~/.dsh/dsh-usage-token`、`deepseek-usage-monitor` 的 `config.json`）也都是 0600 文件方案。设置页有「清除」按钮可彻底删除。
-- 日志只记录错误码与状态，不记录凭据。
-
----
-
-## 八、已知限制
-
-- 用量 / 费用接口是**未公开的网页接口**，DeepSeek 随时可能改形状或加校验。解析器刻意写成「按语义递归抓取」并配了夹具测试，形状微调不会直接把面板打空；但如果路径和字段名同时大改，仍需要跟着改。
-- **系统通知在本机拿不到权限——这是 ad-hoc 签名的硬限制，不是配置问题。** 实测证据：
-  - App 内自报 `通知权限：被拒绝`，而 `add()` 不报错（典型的静默失败）；
-  - 本 App 的 bundle id 在通知中心数据库 `com.apple.ncprefs.plist` 里**完全没有记录**，所以「系统设置 → 通知」里根本不会列出它，用户也**无法手动打开**；
-  - **对照实验**：把同一个二进制换个全新的 bundle id（`com.dsh.deepseekfloat.probe`）重新 ad-hoc 签名安装，仍然是被拒绝。所以不是记录陈旧，`usernotificationd` 就是不认没有稳定签名身份的 App。
-  - 要真正修好只能给 App 一个 Apple 签发的证书（免费 Apple ID 即可，但需要装 Xcode 走自动签名），对本机自用来说不划算。
-- **低余额提醒因此改走不需要权限的通道**：余额低于阈值时，面板进入**呼吸红边告警态**（琥珀色=偏低，红色=耗尽），并播一次系统提示音。窗口本来就常驻可见，这条比一条容易被错过的横幅更可靠。设置页的「发送测试」按钮可以手动验证通知链路。
-- **开机自启**走 `SMAppService`，必须先 `./build.sh install` 装到 `/Applications`，否则报 `系统找不到该 App`。
-- 仅 Apple Silicon。Intel 机器需要把 `build.sh` 里的 `SDK_TARGET` 改成 `x86_64-apple-macos14.0`。
-- 同一时刻只允许一个实例（`AppDelegate` 里有守卫，重复启动会自行退出）。
-- 目前只做「读取展示」，不做预算硬闸或自动充值。
-
----
-
-## 九、参考的开源实现
-
-本项目没有直接 fork 任何仓库，但接口契约是从下面这些实现里交叉验证出来的——尤其是「平台用量接口需要 `userToken` 而非 API Key，且必须伪装浏览器头过 WAF」这两条关键事实：
-
-- [KAPAIJUN/deepseek-usage-monitor](https://github.com/KAPAIJUN/deepseek-usage-monitor) — macOS 菜单栏小部件，同样用 Swift + CommandLineTools 编译，验证了本机工具链可行性；其 `usage/cost`、`usage/amount`、`usage/export` 用法与 CSV 口径是本项目的重要参照。
-- [Huasecc/dsh-usage](https://github.com/Huasecc/dsh-usage) — DSH Web GUI 插件，`usage/by_api_key/{amount,cost}` 的窗口接口与 WAF 请求头取自这里。
-- [AzureHalcyon/dsh-deepseek-usage](https://github.com/AzureHalcyon/dsh-deepseek-usage) — DSH 插件，`total`/`days` 与 `REQUEST` 的口径处理、以及 `usage/export` 的 CSV 列名（`api_key_name`、`model`、`type`、`amount`、`price`）来自这里。
-
-如果你更想要**菜单栏**而不是**桌面悬浮窗**，或者想要 DSH 网页内的面板，上面几个项目可以直接部署，不必重造。
-
----
-
-## 十、目录结构
+## 开发
 
 ```
 DeepSeekFloat/
-├── build.sh                    一键编译 / 运行 / 安装 / 打包 / 图标 / 测试
-├── Resources/Info.plist        LSUIElement=true（无 Dock 图标）
-├── Resources/AppIcon.icns      ./build.sh icon 生成
+├── build.sh                         编译 / 运行 / 安装 / 打包 / 图标 / 测试
+├── Resources/Info.plist             LSUIElement=true
+├── Resources/AppIcon.icns           ./build.sh icon 生成
 ├── Sources/
-│   ├── AppMain.swift           入口，含 --selftest / --parsetest / --render / --login-item / --notify-*
-│   ├── AppDelegate.swift       装配
-│   ├── AppModel.swift          状态、刷新调度、速率估算、低余额判定
-│   ├── DeepSeekAPI.swift       两个域名、两条凭据通路、错误映射
-│   ├── JSONValue.swift         容错解析（语义递归 + 防重复计数）
-│   ├── CredentialStore.swift   0600 凭据文件 + DSH 导入
-│   ├── FloatingPanelController.swift  无边框置顶面板、自适应高度、拖拽热区
-│   ├── StatusItemController.swift     菜单栏
+│   ├── AppMain.swift                入口和各个 -- 子命令
+│   ├── AppDelegate.swift            装配、信号入口
+│   ├── AppModel.swift               状态、刷新调度、速率估算
+│   ├── DeepSeekAPI.swift            两个域名、两条通路
+│   ├── JSONValue.swift              容错解析
+│   ├── DSHLogSource.swift           DSH 会话日志，用量来源之一
+│   ├── CredentialStore.swift        0600 凭据文件
+│   ├── FloatingPanelController.swift  面板、自适应高度、拖拽热区
+│   ├── StatusItemController.swift   菜单栏
 │   ├── Notifier.swift / LaunchAtLogin.swift
-│   ├── Models.swift            数据模型与格式化
-│   ├── PeakSchedule.swift      峰谷时段判定与切换倒计时
-│   ├── VisualEffects.swift     噪点纹理、余额增减气泡、成功对勾
-│   ├── ParserTests.swift       夹具测试
-│   ├── SelfTest.swift          联网自检
-│   └── Views/                  SwiftUI 界面
-├── Tools/IconGen.swift         纯代码画图标
-├── Tools/WindowProbe.swift     窗口几何探针
-└── docs/                       截图
+│   ├── Models.swift                 数据模型
+│   ├── PeakSchedule.swift           峰谷判定
+│   ├── VisualEffects.swift          噪点、余额气泡、对勾
+│   ├── ParserTests.swift            夹具测试
+│   ├── SelfTest.swift               联网自检
+│   └── Views/
+├── Tools/IconGen.swift              纯代码画图标
+├── Tools/WindowProbe.swift          窗口几何探针
+├── Tools/CropImage.swift            裁剪抓帧
+└── docs/
 ```
 
-### 开发提示
+几个实现上的坑：
 
-- SwiftUI 内容通过 `reportHeight` 把自然高度上报给 `NSPanel`，窗口自适应并保持顶边不动。
-- `ImageRenderer` 无法光栅化 `ScrollView` 与 `NSViewRepresentable`（会画成 🚫），所以视图里有一个 `\.snapshotMode` 环境开关，渲染快照时改走等价的可渲染路径。
-- 预览 / 渲染模式**不会**写回 `UserDefaults`（`AppModel.loaded` 是写回闸门），避免 `--render --collapsed` 污染真实配置。
+- 内容高度通过 `reportHeight` 上报给 `NSPanel`，窗口自适应时保持顶边不动
+- `ImageRenderer` 画不了 `ScrollView` 和 `NSViewRepresentable`，会成 🚫，
+  所以视图里有个 `\.snapshotMode` 开关走等价路径
+- 预览和渲染模式不写 `UserDefaults`，否则 `--render --collapsed` 会把真实配置改成收起
 
----
+界面里那些微交互（气泡、数字滚动、双环、热力图）列在
+[docs/视觉细节候选清单.md](docs/视觉细节候选清单.md)，里面还有没做的 17 条。
 
-## 许可
+## License
 
 MIT
-
----
 
 ## 更新日志
 
 ### v1.3 · 2026-10-21
 
-**新增：用量来源可选**
+用量来源改成三选一：平台令牌 / DSH 本地日志 / 不显示。
 
-之前「缓存命中 / 用量趋势」只有一条通路：平台 `userToken`。它属于**账户**作用域——
-当 API Key 是别人给的、而你登录的是自己的账户时，这个接口返回的用量与那把 Key 无关。
-两组数字照样并排显示、看着像一套，实际来自两个账户。
+平台用量接口认的是网页登录态，属于账户作用域。别人给的 Key 配上你自己的账户，
+那个接口返回的数字跟这把 Key 没关系，但两块数字并排摆着，看着像一套。
+加本地日志源之后，这种情况可以直接读 `~/.dsh/sessions`，不需要账户级凭据。
 
-现在来源显式三选一：
+日志字段的含义是对全部真实记录验出来的，也写进了断言。日志里没有金额，所以不做估算。
 
-| 来源 | 覆盖范围 | 金额 | 需要令牌 |
-|---|---|---|---|
-| 平台令牌 | 账户全量，官方账单口径 | 真实金额 | 需要 |
-| DSH 本地日志 | 仅本机 DSH 用当前 Key 发出的请求 | 无 | 不需要 |
-| 不显示 | 只看余额 | — | 不需要 |
+顺带修的：
 
-当前来源标在相关卡片右上角（如「本机 DSH · 今日」），底栏徽章同步变成「日志」。
-本地日志源不需要任何账户级凭据，补齐了「别人给的 Key」这个场景。
+- 分桶没补空桶，稀疏数据会让平均步长失真，热力图据此判断小时 / 天会判错。现在按日历铺满
+- 示例数据的来源赋值顺序错了，`usageSource` 的 didSet 会清空 `usage`，放在造数据之后会把数据清掉
+- 压缩摘要带 usage 但没有模型归属，单独标成「压缩摘要」而不是「未知模型」
 
-**本地日志源的字段口径**
-
-对全部真实记录验证了恒等式 `totalTokens == inputTokens + cacheReadTokens + outputTokens`，
-据此确定 `inputTokens` 是**未命中**、`cacheReadTokens` 是**命中**、`outputTokens` 是输出。
-这条恒等式也钉进了断言，将来日志格式变了会立刻暴露。
-
-压缩摘要（`compaction/summary`）带 usage 但没有模型归属，单独显示为「压缩摘要」，
-不混进含糊的「未知模型」——它们确实花了 token，不能丢，但要说得清是什么。
-
-**刻意的取舍**
-
-本地日志源**不显示金额**。日志里只有 token 数，按价目表估算会给出可能误导的数字；
-而「命中率 + token 数」是一手事实，不需要任何假设。所以「消耗」一栏显示「不提供」。
-
-**修复**
-
-- 分桶补齐空桶。之前只输出有数据的桶，稀疏数据会让「相邻桶平均步长」远超真实粒度，
-  热力图据此判断小时 / 天档位就会误判。现在按日历逐格铺满（跨夏令时也不漂），
-  `--logtest` 实测步长精确为 3600 / 86400 秒。
-- 示例数据的来源赋值顺序。`usageSource` 的 didSet 会清空 `usage`，放在造数据之后
-  会把示例数据一并清掉（曾因此截出「正在读取用量…」）。
-
-**工具**
-
-- `--logtest`：把真实 DSH 日志读一遍并打印汇总，用于人工核对取数口径。
-- `--localsrc`：渲染「本地日志来源」形态的示例数据（无金额、含压缩摘要），
-  让 docs/ 的截图里不出现真实用量数字。
-- `--settings`：启动即打开设置页。离屏渲染画不出 AppKit 控件（Picker 会成 🚫），
-  验收控件只能靠实时抓帧。
+新增 `--logtest`、`--localsrc`、`--settings`。
 
 ### v1.2 · 2026-10-21
 
-**视觉细节（第二批）**
-- **B2 构成条流光**：命中 / 未命中 / 输出构成条上一道窄高光循环掠过，暗示数据在流动。这个实现 v1.0 起就在代码里（随 `CompositionBar` 一起），但一直没验收也没写进清单，本次补上验证：`docs/anim-shimmer.png` 是同一按钮在 0.10s 与 1.10s 的对比，高光位置不同。
-- **C2 柱状图逐根生长**：切时间范围或首次显示时，柱子按序号错开 18ms、用 0.42s 从 0 长到目标高度，形成从左往右依次长出来的观感。90 天那种 84 根柱子的场景把错峰延迟封顶在 0.45s，否则动画要拖到两秒以上。
-  - 验收：`kill -INFO` 抓 0.06 / 0.20 / 0.45 三帧——0.06s 图表区全空，0.45s 左侧已长起、右侧仍在途中（`docs/anim-bar-growth.png`）；`DSF_ANIM_LOG=1` 打点实测相邻两根完成时间相差 17ms。
+柱状图加了逐根生长：切时间范围或首次显示时，每根柱子错开 18ms 从 0 长到目标高度，
+90 天那种 84 根的把延迟封顶在 0.45 秒。
 
-**修复**
-- demo 实例不再强制 `chartMode = .heat`。它一覆盖，示例数据就永远进不去柱状图，调试 C2 时白找半天；现在图表模式尊重偏好，文档截图改用显式的 `--bars` / `--heat`。
+构成条流光其实 v1.0 就写进 `CompositionBar` 了，但一直没验收也没从待办里划掉，这次补了抓帧验证。
 
-**工具**
-- 新增 `Tools/CropImage.swift`：裁剪抓帧的指定区域。整窗抓帧里柱状图和构成条只有几个像素宽，不裁出来根本判断不了动画帧之间有没有变化。
-- 新增 `kill -INFO` 柱状图生长探针，以及 `DSF_ANIM_LOG=1` 的动画打点。
+修了 demo 实例强制 `chartMode = .heat` 的问题，它一覆盖，示例数据就进不去柱状图。
+新增 `Tools/CropImage.swift` 和 `kill -INFO` 柱状图探针。
 
 ### v1.1 · 2026-10-21
 
-**新增**
-- 收起态显示**峰谷单字价签**：余额右侧一个与金额同字号的汉字，红「峰」= 高峰原价，绿「谷」= 空闲五折。收起形态才是常驻可见的那一面，价格档位直接决定「现在跑批划不划算」，比余额本身更有决策价值。悬停可看切换倒计时。
-- `--peak` / `--offpeak` 预览开关。价签只在对应时段出现，错过就要等下一个窗口——比如空闲时段想看红「峰」，得等到次日 9:00。
+收起态余额右边加了峰谷单字价签，红「峰」绿「谷」，字号和金额一样大。
+展开态「时段」那一项也改成同一套颜色。
 
-**修复**
-- `./build.sh install` 重装后自动恢复「开机自启」注册。ad-hoc 签名每次编译 cdhash 都会变，等于换了代码身份，`SMAppService` 的原有注册随之失效——之前每次更新都要手动重开一次。
-
-**调整**
-- 展开态余额卡的「时段」小项改用与价签一致的配色（红 / 绿），避免同一概念两处不同色。
+修了重装后开机自启失效的问题：ad-hoc 签名每次编译 cdhash 都会变，
+`SMAppService` 的注册会掉，现在 `install` 会记住原状态并在装完恢复。
 
 ### v1.0 · 2026-10-07
 
-首个版本。
-
-**核心**
-- 输入 DeepSeek API Key 即可查看账户余额；可选粘贴平台 `userToken` 查看 token 用量、缓存命中率、消费与分模型明细。
-- 两条互相独立的凭据通路：官方 `/user/balance` 认 `sk-` Key；平台用量接口认网页登录态 `userToken`。任一条失败不影响另一条。
-
-**形态**
-- 无边框非激活 `NSPanel`：`floating` 层级、跨所有桌面空间、可拖动、高度随内容自适应、无 Dock 图标、菜单栏常驻余额。
-- 安装到 `/Applications`，支持开机自启与干净卸载（含 `--purge`）。
-
-**工程**
-- Swift + AppKit/SwiftUI，`swiftc` 直编，只需要 Command Line Tools，不需要完整 Xcode。
-- 平台用量接口未公开且响应形状不统一，解析器按语义递归抓取；对「`total` 与 `days` 不能相加」这类会翻倍计费的坑有专门规则，配 76 项断言覆盖。
-- 自检与调试通道：`--selftest` / `--parsetest` / `--render` / `--demo`，以及 `SIGHUP`（刷新）/ `SIGUSR1`（抓动画中间帧）/ `SIGUSR2`（测试通知）/ `SIGWINCH`（切换置顶）四条信号通道。
-
-**视觉（第一批 12 条）**
-- 余额增减气泡、数字滚动、变化色闪、双同心环、天 / 小时热力图、噪点纹理、背景极光、低余额呼吸红边等。完整清单见 [docs/视觉细节候选清单.md](docs/视觉细节候选清单.md)。
+第一版。余额、缓存命中、趋势、分模型，两条凭据通路，无边框面板，菜单栏常驻，
+开机自启，76 项断言起步。
