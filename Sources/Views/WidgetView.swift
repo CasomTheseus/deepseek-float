@@ -8,6 +8,13 @@ enum Metrics {
 }
 
 /// 悬浮窗根视图。高度靠 `reportHeight` 上报给 NSPanel，窗口随之自适应。
+/// 波浪图标在宿主视图里的位置。控制器按它判断「指针是不是在这个图标上」，
+/// 写死坐标的话布局一改就失效。
+private struct IconFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+}
+
 struct WidgetView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.snapshotMode) private var snapshotMode
@@ -128,29 +135,53 @@ struct WidgetView: View {
 
     private var header: some View {
         HStack(spacing: 7) {
-            // 整块标题区都是拖拽热区（SwiftUI 内容设为不参与命中测试，让 AppKit 视图接管）
+            // 波浪图标：淡出状态下这是全窗口唯一还接得住鼠标的地方，点它恢复。
+            // 必须放在拖拽热区外面，否则 WindowDragHandle 会把点击吃掉
+            // （报告里的 hitView 就是用来确认这件事的）。
+            Button {
+                model.restoreRequests.send()
+            } label: {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(LinearGradient(colors: [DS.accent, DS.accentSoft],
+                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                    Image(systemName: "water.waves")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 21, height: 21)
+                .overlay {
+                    // 淡出时描一圈，否则 25% 透明度下看不出这里还能点
+                    if model.isIdleFaded {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.55), lineWidth: 1)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .help("恢复到完全显示")
+            .onHover { inside in
+                if inside { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
+            }
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(key: IconFrameKey.self,
+                                           value: proxy.frame(in: .global))
+                }
+            )
+            .onPreferenceChange(IconFrameKey.self) { model.iconFrame = $0 }
+
+            // 标题区仍是拖拽热区（SwiftUI 内容不参与命中测试，让 AppKit 视图接管）
             ZStack(alignment: .leading) {
                 if !snapshotMode { WindowDragHandle() }
-                HStack(spacing: 7) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(LinearGradient(colors: [DS.accent, DS.accentSoft],
-                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
-                        Image(systemName: "water.waves")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-                    .frame(width: 21, height: 21)
-
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("DeepSeek")
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(DS.textPrimary)
-                        Text(subtitle)
-                            .font(.system(size: 8.5))
-                            .foregroundStyle(DS.textTertiary)
-                            .lineLimit(1)
-                    }
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("DeepSeek")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(DS.textPrimary)
+                    Text(subtitle)
+                        .font(.system(size: 8.5))
+                        .foregroundStyle(DS.textTertiary)
+                        .lineLimit(1)
                 }
                 .fixedSize()
                 .allowsHitTesting(false)

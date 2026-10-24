@@ -24,6 +24,7 @@ DeepSeekFloat 由两块组成：一个无边框悬浮面板，显示余额、缓
 | 缓存命中 | 双同心环（外环命中率、内环输出占比）、三段构成条、请求次数、分级徽章 |
 | 用量趋势 | 今日 / 24 小时 / 7 天 / 30 天 / 本月 / 90 天，柱状与热力两种画法 |
 | 分模型 | 每个模型的 token、费用，以及每百万 token 平均费用 |
+| 闲置淡出 | 指针离开一段时间后变淡并鼠标穿透，点左上角波浪图标恢复 |
 | 低余额提醒 | 面板呼吸红边加一声提示音，不走系统通知（原因见常见问题） |
 | 菜单栏 | 常驻余额；点开可显隐、刷新、设置、置顶、开机自启、退出 |
 
@@ -51,7 +52,7 @@ cd deepseek-float
 ./build.sh run          # 从 build/ 直接跑，不安装
 ./build.sh status       # 安装、运行、开机自启、凭据状态
 ./build.sh uninstall    # 卸载；加 --purge 连凭据和偏好一起删
-./build.sh test         # 89 项断言
+./build.sh test         # 103 项断言
 ```
 
 必须装到 `/Applications`。开机自启走 `SMAppService`，只认登记过的 bundle，
@@ -195,6 +196,18 @@ ad-hoc 签名的限制，不是配置问题。几个证据：
 在别的 App 激活时并不会自动落到后面，`level = normal` 时它依旧压在整屏 Safari 上面，
 等于开关没效果。这点专门测过。
 
+### 窗口为什么自己变淡了？还点不到？
+
+指针离开面板、闲置满设定时间后，面板会淡到设定的透明度，同时开启鼠标穿透，点击直接落到底下的窗口。
+
+恢复办法只有一个：**点左上角的波浪图标**。淡出期间只有那一小块还接得住鼠标，其余位置全部穿透；
+指针扫过面板也不会把它唤醒。
+
+这是有意这么做的。最早一版是「指针移回面板就恢复」，结果是为了点下面的窗口，指针必须先经过面板，
+可一经过就恢复，点击又被面板抢走，穿透等于没做。
+
+设置页「外观与刷新」里可以关掉，或改等待时间和淡出透明度。设置页开着、或者正在低余额告警时不会淡出。
+
 ### 为什么不用钥匙串存凭据？
 
 因为 ad-hoc 签名每次重新编译 cdhash 都会变，钥匙串 ACL 会把新构建当成陌生程序，
@@ -221,7 +234,7 @@ ad-hoc 签名的限制，不是配置问题。几个证据：
 APP=build/DeepSeekFloat.app/Contents/MacOS/DeepSeekFloat
 
 DSF_API_KEY=sk-xxx $APP --selftest    # 联网自检两条通路，不打印密钥
-$APP --parsetest                      # 89 项断言
+$APP --parsetest                      # 103 项断言
 $APP --logtest                        # 读真实 DSH 日志打汇总
 
 $APP --render out.png [--settings] [--collapsed] [--empty] [--daily]
@@ -283,6 +296,7 @@ DeepSeekFloat/
 ├── Tools/IconGen.swift              纯代码画图标
 ├── Tools/WindowProbe.swift          窗口几何探针
 ├── Tools/CropImage.swift            裁剪抓帧
+├── Tools/CursorProbe.swift          查询 / 移动指针，验收位置相关交互
 └── docs/
 ```
 
@@ -301,6 +315,38 @@ DeepSeekFloat/
 MIT
 
 ## 更新日志
+
+### v1.4 · 2026-10-24
+
+闲置淡出：指针离开面板、闲置满设定时间后，窗口淡到设定的透明度，同时打开
+`ignoresMouseEvents`，点击直接落到底下的窗口。
+
+恢复入口只有一个：**点左上角的波浪图标**。淡出期间只有那一小块接得住鼠标，其余位置全部穿透，
+指针扫过面板也不会把它唤醒。
+
+这个「只有图标能唤醒」是被逼出来的。最初写的是「指针移回面板就恢复」，结果为了点下面的窗口，
+指针必须先经过面板 —— 一经过就恢复，恢复后的面板又把点击抢走，穿透等于没做。所以：
+
+- 波浪图标从拖拽热区里挪出来独立成按钮。原来它在 `WindowDragHandle` 的 ZStack 里面，
+  点击会被拖拽视图吃掉
+- 窗口是否收鼠标事件，只取决于指针在不在图标矩形内。图标矩形由 SwiftUI 用
+  `GeometryReader` + `PreferenceKey` 上报实际布局位置，不写死坐标；拿不到时兜底到左上角一小块
+- 恢复靠轮询 `NSEvent.mouseLocation`（全局属性，不需要任何权限）。没有用 tracking area——
+  淡出后窗口收不到 `mouseEntered`，那条路走不通
+
+判定是 `IdleFadePhase` / `IdleFadeAction` 状态机，配 15 条断言。其中一条专门锁住上面那个 bug：
+已淡出 + 指针扫过面板 → 必须 stay，不能 restore。
+
+设置页开着或低余额告警期间不淡出：前者会看不清，后者等于把唯一的提醒通道关掉。
+等待时间、淡出透明度、总开关都在「外观与刷新」里。
+
+验收：淡出后把指针移到面板中心，报告零新增记录；移到图标矩形才出现放行记录且
+`ignoresMouse=false`。报告里还记了图标那一点命中的 NSView 类名，确认是 `NSHostingView`
+而不是 `HandleView`，说明拖拽热区确实让开了。
+
+另外本来想用合成点击验证穿透，但终端没有辅助功能授权（`AXIsProcessTrusted = false`），
+事件投递不出去。改用 `NSWindow.windowNumber(at:belowWindowWithWindowNumber:)` 问窗口服务器
+「这个点上最上层可接收鼠标事件的窗口是谁」：淡出时返回别的窗口，不需要任何授权就能判定。
 
 ### v1.3 · 2026-10-21
 

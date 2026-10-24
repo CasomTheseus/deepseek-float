@@ -205,6 +205,37 @@ struct SettingsView: View {
                         .frame(width: 34, alignment: .trailing)
                 }
 
+                toggleRow("闲置后淡出", isOn: $model.fadeWhenIdle)
+
+                if model.fadeWhenIdle {
+                    Picker("闲置判定", selection: $model.idleFadeDelay) {
+                        Text("5 秒").tag(5.0)
+                        Text("10 秒").tag(10.0)
+                        Text("30 秒").tag(30.0)
+                        Text("1 分钟").tag(60.0)
+                    }
+                    .pickerStyle(.menu)
+                    .font(.system(size: 10.5))
+
+                    HStack(spacing: 6) {
+                        Text("淡出透明度").font(.system(size: 10.5)).foregroundStyle(DS.textSecondary)
+                        Slider(value: $model.idleOpacity, in: 0.08...0.6)
+                            .controlSize(.mini)
+                        Text(Fmt.percent(model.idleOpacity))
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(DS.textTertiary)
+                            .frame(width: 34, alignment: .trailing)
+                    }
+
+                    Text("淡出后鼠标可以点穿到下面的窗口。指针移回面板会自动恢复，"
+                         + "所以不看它的时候不占地方，要看的时候也点得到。\n"
+                         + "设置页打开或低余额告警期间不会淡出。")
+                        .font(.system(size: 8.5))
+                        .foregroundStyle(DS.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .lineSpacing(1.5)
+                }
+
                 toggleRow("窗口永远置顶", isOn: $model.alwaysOnTop)
                 toggleRow("面板隐藏时降到 5 分钟", isOn: $model.hideWhenIdle)
                 toggleRow("显示分模型明细", isOn: $model.showModels)

@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import SwiftUI
 
 /// 全局状态与刷新调度。
@@ -68,6 +69,20 @@ final class AppModel: ObservableObject {
     @Published var refreshInterval: Double = 60 { didSet { persist(); restartTimer() } }
     @Published var opacity: Double = 0.94 { didSet { persist() } }
     @Published var alwaysOnTop: Bool = true { didSet { persist() } }
+    /// 闲置淡出：指针不在面板上、且闲置超过一段时间后，把窗口变淡并让鼠标穿透到下层
+    @Published var fadeWhenIdle: Bool = true { didSet { persist() } }
+    @Published var idleFadeDelay: Double = 10 { didSet { persist() } }
+    @Published var idleOpacity: Double = 0.25 { didSet { persist() } }
+
+    /// 当前是否处于淡出（鼠标穿透）状态。只由 FloatingPanelController 写。
+    @Published private(set) var isIdleFaded = false
+    /// 波浪图标在宿主视图里的位置（SwiftUI 全局坐标，y 从上往下）。
+    /// 淡出期间只有这块区域可交互，所以要按实际布局取，不能写死。
+    @Published var iconFrame: CGRect = .zero
+    /// 点波浪图标 → 请求恢复。视图发，控制器收。
+    let restoreRequests = PassthroughSubject<Void, Never>()
+
+    func setIdleFaded(_ faded: Bool) { isIdleFaded = faded }
     @Published var expanded: Bool = true { didSet { persist() } }
     @Published var showModels: Bool = true { didSet { persist() } }
     @Published var lowBalanceThreshold: Double = 5 { didSet { persist() } }
@@ -252,6 +267,9 @@ final class AppModel: ObservableObject {
         static let expanded = "expanded"
         static let showModels = "showModels"
         static let usageSource = "usageSource"
+        static let fadeWhenIdle = "fadeWhenIdle"
+        static let idleFadeDelay = "idleFadeDelay"
+        static let idleOpacity = "idleOpacity"
         static let threshold = "lowBalanceThreshold"
         static let notifications = "notificationsEnabled"
         static let hideWhenIdle = "hideWhenIdle"
@@ -271,6 +289,9 @@ final class AppModel: ObservableObject {
         if let raw = d.string(forKey: Key.usageSource), let source = UsageSource(rawValue: raw) {
             usageSource = source
         }
+        if d.object(forKey: Key.fadeWhenIdle) != nil { fadeWhenIdle = d.bool(forKey: Key.fadeWhenIdle) }
+        if d.object(forKey: Key.idleFadeDelay) != nil { idleFadeDelay = d.double(forKey: Key.idleFadeDelay) }
+        if d.object(forKey: Key.idleOpacity) != nil { idleOpacity = d.double(forKey: Key.idleOpacity) }
         if d.object(forKey: Key.threshold) != nil { lowBalanceThreshold = d.double(forKey: Key.threshold) }
         if d.object(forKey: Key.notifications) != nil { notificationsEnabled = d.bool(forKey: Key.notifications) }
         if d.object(forKey: Key.hideWhenIdle) != nil { hideWhenIdle = d.bool(forKey: Key.hideWhenIdle) }
@@ -288,6 +309,9 @@ final class AppModel: ObservableObject {
         d.set(expanded, forKey: Key.expanded)
         d.set(showModels, forKey: Key.showModels)
         d.set(usageSource.rawValue, forKey: Key.usageSource)
+        d.set(fadeWhenIdle, forKey: Key.fadeWhenIdle)
+        d.set(idleFadeDelay, forKey: Key.idleFadeDelay)
+        d.set(idleOpacity, forKey: Key.idleOpacity)
         d.set(lowBalanceThreshold, forKey: Key.threshold)
         d.set(notificationsEnabled, forKey: Key.notifications)
         d.set(hideWhenIdle, forKey: Key.hideWhenIdle)

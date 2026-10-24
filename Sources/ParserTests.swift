@@ -27,6 +27,7 @@ enum ParserTests {
         balanceDelta()
         simulatePath()
         localLogUsage()
+        idleFade()
 
         print("")
         print(failures == 0 ? "结果：\(checks) 项断言全部通过。" : "结果：\(checks) 项断言中 \(failures) 项失败。")
@@ -385,6 +386,43 @@ enum ParserTests {
         check("只有平台来源提供金额", UsageSource.platform.providesCost
                                       && !UsageSource.localLog.providesCost
                                       && !UsageSource.none.providesCost)
+    }
+
+    // MARK: - 闲置淡出
+
+    private static func idleFade() {
+        func action(phase: IdleFadePolicy.Phase = .awake,
+                    hovering: Bool = false,
+                    idle: TimeInterval = 20,
+                    delay: TimeInterval = 10,
+                    enabled: Bool = true,
+                    settings: Bool = false,
+                    lowBalance: Bool = false) -> IdleFadePolicy.Action {
+            IdleFadePolicy.action(phase: phase, hovering: hovering, idleFor: idle, delay: delay,
+                                  enabled: enabled, settingsOpen: settings, lowBalance: lowBalance)
+        }
+
+        check("闲置超时 → 淡出", action() == .fade)
+        check("未到延迟 → 不动", action(idle: 5) == .stay)
+        check("刚好到延迟 → 淡出", action(idle: 10) == .fade)
+        check("指针在面板上 → 不淡出", action(hovering: true) == .stay)
+        check("关掉开关 → 不淡出", action(enabled: false) == .stay)
+        check("设置页开着 → 不淡出", action(settings: true) == .stay)
+        check("低余额告警期间 → 不淡出", action(lowBalance: true) == .stay)
+
+        // 下面几条是用户报过的 bug：淡出后指针扫过面板不能把窗口唤醒。
+        // 否则为了点下面的窗口，指针必须先经过面板，可一经过就恢复，
+        // 点击又被面板抢走，穿透等于没做。
+        check("已淡出 + 指针扫过面板 → 保持淡出", action(phase: .faded, hovering: true) == .stay)
+        check("已淡出 + 闲置继续增长 → 仍是淡出", action(phase: .faded, idle: 9_999) == .stay)
+        check("已淡出 + 关掉开关 → 恢复", action(phase: .faded, enabled: false) == .restore)
+        check("已淡出 + 打开设置页 → 恢复", action(phase: .faded, settings: true) == .restore)
+        check("已淡出 + 低余额告警 → 恢复", action(phase: .faded, lowBalance: true) == .restore)
+
+        check("淡出 + 指针在图标上 → 放行鼠标",
+              IdleFadePolicy.acceptsMouseWhileFaded(cursorOverIcon: true))
+        check("淡出 + 指针不在图标上 → 穿透",
+              !IdleFadePolicy.acceptsMouseWhileFaded(cursorOverIcon: false))
     }
 
     private static func check(_ label: String, _ passed: Bool, _ detail: String = "") {
