@@ -398,9 +398,11 @@ enum ParserTests {
                     delay: TimeInterval = 10,
                     enabled: Bool = true,
                     settings: Bool = false,
-                    lowBalance: Bool = false) -> IdleFadePolicy.Action {
+                    lowBalance: Bool = false,
+                    expanded: Bool = false) -> IdleFadePolicy.Action {
             IdleFadePolicy.action(phase: phase, hovering: hovering, idleFor: idle, delay: delay,
-                                  enabled: enabled, settingsOpen: settings, lowBalance: lowBalance)
+                                  enabled: enabled, settingsOpen: settings,
+                                  lowBalance: lowBalance, expanded: expanded)
         }
 
         check("闲置超时 → 淡出", action() == .fade)
@@ -410,6 +412,9 @@ enum ParserTests {
         check("关掉开关 → 不淡出", action(enabled: false) == .stay)
         check("设置页开着 → 不淡出", action(settings: true) == .stay)
         check("低余额告警期间 → 不淡出", action(lowBalance: true) == .stay)
+        // 展开态是"我要看细节"的信号，这时候淡掉等于把人读到一半的字弄糊
+        check("展开态 → 不淡出", action(expanded: true) == .stay)
+        check("展开态 + 闲置很久 → 仍不淡出", action(idle: 9_999, expanded: true) == .stay)
 
         // 下面几条是用户报过的 bug：淡出后指针扫过面板不能把窗口唤醒。
         // 否则为了点下面的窗口，指针必须先经过面板，可一经过就恢复，
@@ -419,6 +424,7 @@ enum ParserTests {
         check("已淡出 + 关掉开关 → 恢复", action(phase: .faded, enabled: false) == .restore)
         check("已淡出 + 打开设置页 → 恢复", action(phase: .faded, settings: true) == .restore)
         check("已淡出 + 低余额告警 → 恢复", action(phase: .faded, lowBalance: true) == .restore)
+        check("已淡出 + 切到展开 → 恢复", action(phase: .faded, expanded: true) == .restore)
 
         check("淡出 + 指针在图标上 → 放行鼠标",
               IdleFadePolicy.acceptsMouseWhileFaded(cursorOverIcon: true))

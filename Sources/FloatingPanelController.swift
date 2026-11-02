@@ -54,9 +54,13 @@ enum IdleFadePolicy {
                        delay: TimeInterval,
                        enabled: Bool,
                        settingsOpen: Bool,
-                       lowBalance: Bool) -> Action {
-        // 关掉开关、开着设置页、正在低余额告警：都不该淡，已经淡了就恢复
-        if !enabled || settingsOpen || lowBalance {
+                       lowBalance: Bool,
+                       expanded: Bool) -> Action {
+        // 关开关、开着设置页、低余额告警、展开态：都不该淡，已经淡了就恢复。
+        //
+        // 展开态是"我要看细节"的明确信号。这时候淡掉等于在用户读到一半时把字弄糊，
+        // 所以淡出只服务于收起形态——那一面才是常驻挂着、不想占地方的。
+        if !enabled || settingsOpen || lowBalance || expanded {
             return phase == .faded ? .restore : .stay
         }
         if phase == .faded {
@@ -248,10 +252,12 @@ final class FloatingPanelController {
             delay: model.idleFadeDelay,
             enabled: model.fadeWhenIdle,
             settingsOpen: model.showSettings,
-            lowBalance: model.isLowBalance
+            lowBalance: model.isLowBalance,
+            expanded: model.expanded
         )
 
-        if hovering || model.showSettings || model.isLowBalance || !model.fadeWhenIdle {
+        if hovering || model.showSettings || model.isLowBalance
+            || model.expanded || !model.fadeWhenIdle {
             fadeAnchor = Date()
         }
 

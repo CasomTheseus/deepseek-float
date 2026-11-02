@@ -227,9 +227,12 @@ struct SettingsView: View {
                             .frame(width: 34, alignment: .trailing)
                     }
 
-                    Text("淡出后鼠标可以点穿到下面的窗口。指针移回面板会自动恢复，"
-                         + "所以不看它的时候不占地方，要看的时候也点得到。\n"
-                         + "设置页打开或低余额告警期间不会淡出。")
+                    // 注意：这里用 + 拼字符串，得到的是普通 String，
+                    // Text 不会解析 Markdown，所以不能写 **加粗**
+                    Text("只在小窗（收起）形态生效。淡出后鼠标可以点穿到下面的窗口，"
+                         + "点左上角的波浪图标恢复。\n"
+                         + "展开、设置页打开、低余额告警期间都不会淡出——展开时说明你在看细节，"
+                         + "这时候淡掉只会把字弄糊。")
                         .font(.system(size: 8.5))
                         .foregroundStyle(DS.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
