@@ -28,6 +28,7 @@ enum ParserTests {
         simulatePath()
         localLogUsage()
         idleFade()
+        balanceTrend()
 
         print("")
         print(failures == 0 ? "结果：\(checks) 项断言全部通过。" : "结果：\(checks) 项断言中 \(failures) 项失败。")
@@ -423,6 +424,70 @@ enum ParserTests {
               IdleFadePolicy.acceptsMouseWhileFaded(cursorOverIcon: true))
         check("淡出 + 指针不在图标上 → 穿透",
               !IdleFadePolicy.acceptsMouseWhileFaded(cursorOverIcon: false))
+    }
+
+    // MARK: - 余额走势
+
+    private static func balanceTrend() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func sample(_ hoursAgo: Double, _ total: Double) -> BalanceSample {
+            BalanceSample(date: now.addingTimeInterval(-hoursAgo * 3600), total: total)
+        }
+
+        // prune：丢过期、排序、截断
+        let messy = [sample(1, 10), sample(30, 99), sample(2, 9)]
+        let pruned = BalanceTrend.prune(messy, now: now)
+        check("prune 丢掉 24 小时以外的采样", pruned.count == 2, "实际 \(pruned.count)")
+        check("prune 按时间升序", pruned.map(\.date) == pruned.map(\.date).sorted())
+        let capped = BalanceTrend.prune((0..<600).map { sample(Double($0) * 0.01, 1) },
+                                        now: now, limit: 100)
+        check("prune 截断到上限", capped.count == 100, "实际 \(capped.count)")
+
+        // rate
+        let decline = [sample(2, 100), sample(0, 98)]
+        check("rate 两小时掉 2 元 → 1 元/小时",
+              abs((BalanceTrend.rate(decline) ?? 0) - 1.0) < 0.001)
+        check("rate 余额上升（充值）→ nil",
+              BalanceTrend.rate([sample(1, 100), sample(0, 120)]) == nil)
+        check("rate 单点 → nil", BalanceTrend.rate([sample(1, 100)]) == nil)
+
+        // span / 可靠性
+        check("span 两点之间", abs(BalanceTrend.span(decline) - 7200) < 1)
+        check("span 单点 → 0", BalanceTrend.span([sample(1, 100)]) == 0)
+        check("跨度 10 分钟 → 不可靠",
+              !BalanceTrend.isReliable([sample(1.0 / 6, 100), sample(0, 99.9)]))
+        check("跨度 45 分钟 → 可靠",
+              BalanceTrend.isReliable([sample(0.75, 100), sample(0, 99)]))
+
+        // points：视图映射
+        let size = CGSize(width: 100, height: 40)
+        let mapped = BalanceTrend.points([sample(2, 10), sample(1, 20), sample(0, 15)], in: size)
+        check("points 数量与采样一致", mapped.count == 3, "实际 \(mapped.count)")
+        check("points 横坐标线性递增",
+              mapped[0].x == 0 && abs(mapped[2].x - 100) < 0.01 && mapped[1].x > mapped[0].x)
+        // y 向下：最大值应当最靠上
+        check("points 最大值最靠上", mapped[1].y < mapped[0].y && mapped[1].y < mapped[2].y)
+        check("points 全在画布内", mapped.allSatisfy { $0.y >= 0 && $0.y <= size.height })
+        let flat = BalanceTrend.points([sample(2, 5), sample(1, 5), sample(0, 5)], in: size)
+        check("points 等值序列贴中线",
+              flat.allSatisfy { abs($0.y - size.height / 2) < 0.01 })
+        check("points 单点落在中线",
+              BalanceTrend.points([sample(0, 5)], in: size).first.map {
+                  abs($0.y - size.height / 2) < 0.01
+              } ?? false)
+        check("points 空数组 → 空",
+              BalanceTrend.points([], in: size).isEmpty)
+
+        // 噪声下限：几分钱的抖动不能被放大成满幅悬崖
+        let tiny = BalanceTrend.points([sample(2, 38.67), sample(1, 38.64), sample(0, 38.66)],
+                                       in: size)
+        let spread = (tiny.map(\.y).max() ?? 0) - (tiny.map(\.y).min() ?? 0)
+        check("points 微小波动被压平（< 画布 25%）", spread < size.height * 0.25,
+              "实际占 \(Int(spread / size.height * 100))%")
+
+        // 落盘往返
+        let data = BalanceHistoryStore.encode(decline) ?? Data()
+        check("采样编码/解码往返一致", BalanceHistoryStore.decode(data) == decline)
     }
 
     private static func check(_ label: String, _ passed: Bool, _ detail: String = "") {

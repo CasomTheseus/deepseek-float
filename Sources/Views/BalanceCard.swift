@@ -25,6 +25,10 @@ struct BalanceCard: View {
                     breakdownRow(info)
                     divider
                     consumptionRow(info)
+                    if model.balanceHistory.count >= 2 {
+                        divider
+                        trendSection(info)
+                    }
                 } else if let error = model.balanceError {
                     Notice(
                         icon: "exclamationmark.triangle.fill",
@@ -202,7 +206,52 @@ struct BalanceCard: View {
                         .font(.ds(12, .medium, rounded: true))
                         .foregroundStyle(DS.textPrimary)
                 }
+            } else {
+                // 采样不足时宁可不给数字。之前这里直接空着，看不出是没有数据还是算不出来
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text("消耗速率")
+                        .font(.system(size: 9))
+                        .foregroundStyle(DS.textTertiary)
+                    Text("采样中…")
+                        .font(.ds(12, .medium, rounded: true))
+                        .foregroundStyle(DS.textTertiary)
+                        .help("速率来自余额随时间的下滑采样，至少需要两个采样点、跨度 3 分钟以上")
+                }
             }
+        }
+        .help(model.spendPerHour == nil
+              ? "还没有足够采样估算速率"
+              : "基于最近 \(sampleSpanText) 的余额采样估算")
+    }
+
+    /// 采样跨度，用来告诉用户这个速率值不值得当真
+    private var sampleSpanText: String {
+        let span = model.balanceSampleSpan
+        if span < 60 { return "不到 1 分钟" }
+        if span < 3600 { return String(format: "%.0f 分钟", span / 60) }
+        return String(format: "%.1f 小时", span / 3600)
+    }
+
+    /// 余额走势：把持久化下来的采样画成一条曲线。
+    /// 采样跨度直接写在标签里——不给跨度的速率等于没有可信度信息。
+    private func trendSection(_ info: BalanceInfo) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                Text("余额走势")
+                    .font(.system(size: 9))
+                    .foregroundStyle(DS.textTertiary)
+                Text("采样 \(sampleSpanText)")
+                    .font(.system(size: 8.5))
+                    .foregroundStyle(DS.textTertiary.opacity(0.75))
+                Spacer(minLength: 0)
+                if !model.rateIsReliable {
+                    Text("样本偏少")
+                        .font(.system(size: 8.5))
+                        .foregroundStyle(DS.miss)
+                        .help("采样跨度不足 30 分钟，此时的速率量级只能当参考")
+                }
+            }
+            BalanceSparkline(samples: model.balanceHistory, height: 28)
         }
     }
 

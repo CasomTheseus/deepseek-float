@@ -47,7 +47,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var lastRefresh: Date?
     /// 余额历史采样，用于估算消耗速率
-    @Published private(set) var balanceHistory: [(date: Date, total: Double)] = []
+    @Published private(set) var balanceHistory: [BalanceSample] = []
     /// 最近发生的余额增减，用于弹出 `-¥0.05` 气泡（视觉细节 A1）
     @Published private(set) var recentDeltas: [BalanceDelta] = []
 
@@ -121,6 +121,7 @@ final class AppModel: ObservableObject {
     init(startAutomatically: Bool = true, withSampleData: Bool = true, sampleDaily: Bool = false,
          sampleLocalSource: Bool = false) {
         loadPreferences()
+        balanceHistory = BalanceTrend.prune(BalanceHistoryStore.load(), now: Date())
         syncCredentialFlags()
         if startAutomatically {
             // loaded 是「可以写回 UserDefaults」的闸门。
@@ -249,11 +250,14 @@ final class AppModel: ObservableObject {
             monthlyUsage = nil
         }
 
-        balanceHistory = [
-            (now.addingTimeInterval(-6 * 3600), 346.12),
-            (now.addingTimeInterval(-3 * 3600), 345.04),
-            (now, 343.91),
-        ]
+        // 示例采样：6 小时内不均匀下滑（中间有停顿），比直线更像真实使用
+        let shape: [Double] = [0, 0.006, 0.006, 0.012, 0.19, 0.34, 0.35, 0.36,
+                               0.59, 0.87, 0.88, 0.89, 1.0]
+        balanceHistory = shape.enumerated().map { step, fraction in
+            let hoursAgo = 6.0 * (1 - Double(step) / Double(shape.count - 1))
+            return BalanceSample(date: now.addingTimeInterval(-hoursAgo * 3600),
+                                 total: 346.12 - 2.21 * fraction)
+        }
     }
 
     // MARK: - 偏好读写
@@ -555,23 +559,19 @@ final class AppModel: ObservableObject {
 
     private func recordBalanceSample(_ snapshot: BalanceSnapshot) {
         guard let total = snapshot.primary?.total else { return }
-        balanceHistory.append((Date(), total))
-        // 只保留最近 24 小时的采样
-        let cutoff = Date().addingTimeInterval(-24 * 3600)
-        balanceHistory.removeAll { $0.date < cutoff }
-        if balanceHistory.count > 500 { balanceHistory.removeFirst(balanceHistory.count - 500) }
+        let now = Date()
+        balanceHistory = BalanceTrend.prune(balanceHistory + [BalanceSample(date: now, total: total)],
+                                            now: now)
+        // 预览 / 渲染模式不能写盘，否则示例数据会污染真实历史
+        if loaded { BalanceHistoryStore.save(balanceHistory) }
     }
 
     /// 基于余额下滑估算的每小时消耗（元/小时）
-    var spendPerHour: Double? {
-        guard balanceHistory.count >= 2,
-              let first = balanceHistory.first, let last = balanceHistory.last else { return nil }
-        let hours = last.date.timeIntervalSince(first.date) / 3600
-        guard hours > 0.05 else { return nil }
-        let delta = first.total - last.total
-        guard delta > 0 else { return nil }
-        return delta / hours
-    }
+    var spendPerHour: Double? { BalanceTrend.rate(balanceHistory) }
+
+    /// 采样跨度，用来判断速率值不值得当真
+    var balanceSampleSpan: TimeInterval { BalanceTrend.span(balanceHistory) }
+    var rateIsReliable: Bool { BalanceTrend.isReliable(balanceHistory) }
 
     /// 按当前速率，余额还能撑多久
     var estimatedRemainingHours: Double? {
