@@ -7,6 +7,7 @@ import SwiftUI
 ///   · 拿到天级桶 → 星期 × 周 贡献热力图（仿 GitHub / codexU）
 struct TrendCard: View {
     @EnvironmentObject var model: AppModel
+    @State private var hoveredBucketID: Double?
 
     private var buckets: [UsageBucket] { model.usage?.buckets ?? [] }
 
@@ -24,8 +25,10 @@ struct TrendCard: View {
                 } else {
                     HeatmapView(buckets: buckets, hasToken: model.canShowUsage)
                 }
+                peakSummary
             }
         }
+        .onChange(of: model.range) { _, _ in hoveredBucketID = nil }
     }
 
     // MARK: - 头部（含模式切换）
@@ -95,7 +98,14 @@ struct TrendCard: View {
                             maxTotal: maxTotal,
                             availableHeight: geo.size.height,
                             index: item.index,
-                            tooltip: tooltip(item.bucket)
+                            tooltip: tooltip(item.bucket),
+                            onHover: { inside in
+                                if inside {
+                                    hoveredBucketID = item.id
+                                } else if hoveredBucketID == item.id {
+                                    hoveredBucketID = nil
+                                }
+                            }
                         )
                     }
                 }
@@ -103,9 +113,58 @@ struct TrendCard: View {
                 // 切时间范围时整组重建，生长动画会重播一遍
                 // （只靠 bucket id 变化的话，同范围内刷新数据不会重播）
                 .id(model.range)
+                .overlay {
+                    if let hoveredID = hoveredBucketID,
+                       let item = indexedBuckets.first(where: { $0.id == hoveredID }) {
+                        let cellWidth = max(1, (geo.size.width - spacing * CGFloat(buckets.count - 1))
+                                            / CGFloat(buckets.count))
+                        let centerX = cellWidth / 2 + CGFloat(item.index) * (cellWidth + spacing)
+                        ZStack(alignment: .topLeading) {
+                            Rectangle()
+                                .fill(Color.white.opacity(0.28))
+                                .frame(width: 1, height: geo.size.height)
+                                .position(x: centerX, y: geo.size.height / 2)
+                            hoverPopup(item.bucket)
+                                .position(x: min(max(centerX, 80), geo.size.width - 80), y: 16)
+                        }
+                        .allowsHitTesting(false)
+                    }
+                }
             }
             .frame(height: 54)
         }
+    }
+
+    private func hoverPopup(_ bucket: UsageBucket) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(bucketLabel(bucket)) · \(Fmt.tokens(bucket.breakdown.totalTokens)) tokens")
+                .font(.ds(8.5, .semibold))
+                .foregroundStyle(DS.textPrimary)
+            Text("命中 \(Fmt.tokens(bucket.breakdown.cacheHit)) · 未命中 \(Fmt.tokens(bucket.breakdown.cacheMiss)) · 输出 \(Fmt.tokens(bucket.breakdown.output))")
+                .font(.ds(7.5))
+                .foregroundStyle(DS.textSecondary)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .frame(width: 160, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color(red: 0.08, green: 0.10, blue: 0.18).opacity(0.96)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.16), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.28), radius: 5, y: 2)
+    }
+
+    @ViewBuilder
+    private var peakSummary: some View {
+        if let peak = buckets.max(by: { $0.breakdown.totalTokens < $1.breakdown.totalTokens }),
+           peak.breakdown.totalTokens > 0 {
+            Text("峰值 \(Fmt.tokens(peak.breakdown.totalTokens)) tokens · \(bucketLabel(peak))")
+                .font(.ds(8))
+                .foregroundStyle(DS.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
+    private func bucketLabel(_ bucket: UsageBucket) -> String {
+        bucket.label.isEmpty ? Fmt.day.string(from: Date(timeIntervalSince1970: bucket.time)) : bucket.label
     }
 
     private func emptyPlaceholder(height: CGFloat) -> some View {
@@ -121,7 +180,7 @@ struct TrendCard: View {
     }
 
     private func tooltip(_ bucket: UsageBucket) -> String {
-        "\(bucket.label)：命中 \(Fmt.tokens(bucket.breakdown.cacheHit)) · 未命中 \(Fmt.tokens(bucket.breakdown.cacheMiss)) · 输出 \(Fmt.tokens(bucket.breakdown.output))"
+        "\(bucketLabel(bucket))：命中 \(Fmt.tokens(bucket.breakdown.cacheHit)) · 未命中 \(Fmt.tokens(bucket.breakdown.cacheMiss)) · 输出 \(Fmt.tokens(bucket.breakdown.output))"
             + (bucket.cost > 0 ? " · \(Fmt.moneyCompact(bucket.cost, currency: model.usage?.currency ?? "CNY"))" : "")
     }
 }
@@ -143,6 +202,7 @@ private struct BarColumn: View {
     let availableHeight: CGFloat
     let index: Int
     let tooltip: String
+    let onHover: (Bool) -> Void
 
     /// 0 → 1 的生长进度（视觉细节 C2）
     @State private var growth: Double = 0
@@ -165,7 +225,9 @@ private struct BarColumn: View {
             }
         }
         .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
         .help(tooltip)
+        .onHover(perform: onHover)
         .onAppear {
             // 按序号错峰，"从左往右依次长出来"。延迟封顶，否则 90 天那种
             // 84 根柱子的场景动画要拖到两秒以上
@@ -327,9 +389,6 @@ struct HeatmapView: View {
                 Text("多").font(.system(size: 8.5)).foregroundStyle(DS.textTertiary)
                 Spacer(minLength: 4)
                 Text(dateRangeLabel)
-                    .font(.ds(8.5))
-                    .foregroundStyle(DS.textTertiary)
-                Text("峰值 \(Fmt.tokens(maxTokens))")
                     .font(.ds(8.5))
                     .foregroundStyle(DS.textTertiary)
             }

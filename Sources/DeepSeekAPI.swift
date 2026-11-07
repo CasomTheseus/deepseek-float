@@ -41,6 +41,7 @@ enum DeepSeekAPI {
     private struct RawResponse {
         let status: Int
         let body: Data
+        let retryAfter: TimeInterval?
         var text: String { String(data: body, encoding: .utf8) ?? "" }
         var looksLikeHTML: Bool {
             let t = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -55,8 +56,12 @@ enum DeepSeekAPI {
 
         do {
             let (data, response) = try await session.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            return RawResponse(status: status, body: data)
+            let http = response as? HTTPURLResponse
+            let status = http?.statusCode ?? -1
+            let retryAfter = RefreshBackoff.retryAfter(from: http?.value(forHTTPHeaderField: "Retry-After"))
+            return RawResponse(status: status, body: data, retryAfter: retryAfter)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as URLError {
             throw DSFloatError.network(error.localizedDescription)
         } catch {
@@ -83,7 +88,7 @@ enum DeepSeekAPI {
         case 402:
             throw DSFloatError.insufficientBalance
         case 429:
-            throw DSFloatError.rateLimited
+            throw DSFloatError.rateLimited(retryAfter: raw.retryAfter)
         default:
             let msg = JSON.errorMessage(try? JSON.root(raw.body)) ?? raw.text.prefix(160).description
             throw DSFloatError.http(raw.status, msg)
@@ -173,7 +178,7 @@ enum DeepSeekAPI {
         case 403:
             throw raw.looksLikeHTML ? DSFloatError.wafBlocked : DSFloatError.invalidUserToken
         case 429:
-            throw DSFloatError.rateLimited
+            throw DSFloatError.rateLimited(retryAfter: raw.retryAfter)
         default:
             if raw.looksLikeHTML { throw DSFloatError.wafBlocked }
             let msg = JSON.errorMessage(try? JSON.root(raw.body)) ?? raw.text.prefix(160).description

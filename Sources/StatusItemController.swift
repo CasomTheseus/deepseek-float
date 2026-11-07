@@ -135,7 +135,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func togglePanel() { panelController?.toggle() }
 
     @objc private func refreshNow() {
-        Task { await model.refresh(force: true) }
+        model.refresh(force: true)
     }
 
     @objc private func openSettings() { panelController?.showSettings() }
@@ -147,13 +147,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func simulateSpend() {
         // 还没读到余额时先把真实刷新跑起来，否则没有基线可减
         if !model.simulateBalanceChange(-0.07) {
-            Task { await model.refresh(force: true) }
+            model.refresh(force: true)
         }
     }
 
     @objc private func simulateTopUp() {
         if !model.simulateBalanceChange(100) {
-            Task { await model.refresh(force: true) }
+            model.refresh(force: true)
         }
     }
 

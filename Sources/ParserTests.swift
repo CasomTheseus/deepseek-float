@@ -11,7 +11,7 @@ enum ParserTests {
     private static var checks = 0
 
     @MainActor
-    static func run() -> Int {
+    static func run() async -> Int {
         failures = 0
         checks = 0
 
@@ -23,6 +23,9 @@ enum ParserTests {
         monthlyCost()
         lowercaseTypes()
         missingFields()
+        refreshBackoff()
+        await refreshRace()
+        credentials()
         peakSchedule()
         balanceDelta()
         simulatePath()
@@ -204,6 +207,89 @@ enum ParserTests {
               JSON.errorMessage(errorRoot)?.contains("Authentication Fails") == true)
         check("平台业务码可识别",
               JSON.businessCode(try? JSON.root(Data("{\"code\":40003,\"msg\":\"invalid token\"}".utf8))) == 40003)
+    }
+
+    // MARK: - 刷新退避
+
+    private static func refreshBackoff() {
+        check("backoff.首次失败下限", RefreshBackoff.delay(failureCount: 1, jitter: 0) == 12)
+        check("backoff.首次失败上限", abs(RefreshBackoff.delay(failureCount: 1, jitter: 1) - 18) < 0.0001)
+        check("backoff.第二次指数增长", RefreshBackoff.delay(failureCount: 2, jitter: 0.5) == 30)
+        check("backoff.退避封顶", RefreshBackoff.delay(failureCount: 20, jitter: 1) == 300)
+        check("backoff.优先 Retry-After", RefreshBackoff.delay(failureCount: 3, retryAfter: 42) == 42)
+        check("backoff.Retry-After 同样封顶", RefreshBackoff.delay(failureCount: 1, retryAfter: 900) == 300)
+
+        let now = Date(timeIntervalSince1970: 0)
+        check("backoff.解析秒数", RefreshBackoff.retryAfter(from: " 30 ", now: now) == 30)
+        let httpDate = "Thu, 01 Jan 1970 00:01:00 GMT"
+        check("backoff.解析 HTTP 日期", RefreshBackoff.retryAfter(from: httpDate, now: now) == 60)
+        check("backoff.拒绝非法值", RefreshBackoff.retryAfter(from: "later", now: now) == nil)
+        check("backoff.503 可重试", DSFloatError.http(503, "").isTransient)
+        check("backoff.400 不退避", !DSFloatError.http(400, "").isTransient)
+        check("backoff.保留服务端等待时间", DSFloatError.rateLimited(retryAfter: 9).retryAfter == 9)
+    }
+
+    // MARK: - 刷新竞态
+
+    @MainActor
+    private static func refreshRace() async {
+        func snapshot(_ note: String) -> UsageSnapshot {
+            var value = UsageSnapshot()
+            value.scopeNote = note
+            value.totals = TokenBreakdown(cacheHit: 10, cacheMiss: 2, output: 1)
+            return value
+        }
+
+        for oldRequestFails in [false, true] {
+            let model = AppModel(
+                startAutomatically: false,
+                withSampleData: false,
+                usageFetcher: { _, requestedRange in
+                    if requestedRange == .today {
+                        try await Task.sleep(nanoseconds: 250_000_000)
+                        if oldRequestFails { throw DSFloatError.network("旧请求延迟失败") }
+                        return snapshot("旧平台响应")
+                    }
+                    return snapshot("平台响应")
+                },
+                localUsageFetcher: { requestedRange in
+                    snapshot("本机 DSH · \(requestedRange.title)")
+                }
+            )
+            model.setCredentialFlagsForTesting(apiKey: false, userToken: true)
+            model.usageSource = .platform
+            model.range = .today
+
+            let oldRequest = Task { await model.refreshUsage(force: true) }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            model.usageSource = .localLog
+            model.range = .last7d
+            await model.refreshUsage(force: true)
+            await oldRequest.value
+
+            let phase = oldRequestFails ? "旧失败" : "旧成功"
+            check("race.\(phase)响应不覆盖新来源", model.usage?.scopeNote == "本机 DSH · 7天",
+                  model.usage?.scopeNote ?? "nil")
+            check("race.\(phase)响应不污染新错误态", model.usageError == nil,
+                  model.usageError ?? "nil")
+        }
+    }
+
+    // MARK: - 凭据规范化
+
+    private static func credentials() {
+        let plain = CredentialStore.normalizeToken("  \"token-value\" \n")
+        check("token 剥掉引号", plain.token == "token-value")
+        check("token 原文没有到期时间", plain.expiresAt == nil)
+
+        let seconds = CredentialStore.normalizeToken("{\"value\":\"abc\",\"expireAt\":1800000000}")
+        check("token JSON 保留 value", seconds.token == "abc")
+        check("token 解析秒级 expireAt", seconds.expiresAt?.timeIntervalSince1970 == 1_800_000_000)
+
+        let milliseconds = CredentialStore.normalizeToken("{\"value\":\"xyz\",\"expireAt\":\"1800000000123\"}")
+        check("token 解析毫秒级 expireAt",
+              abs((milliseconds.expiresAt?.timeIntervalSince1970 ?? 0) - 1_800_000_000.123) < 0.001)
+        check("token 非法 JSON 不崩溃", CredentialStore.normalizeToken("{bad").token == "{bad")
     }
 
     // MARK: - 峰谷时段
@@ -445,9 +531,19 @@ enum ParserTests {
         let pruned = BalanceTrend.prune(messy, now: now)
         check("prune 丢掉 24 小时以外的采样", pruned.count == 2, "实际 \(pruned.count)")
         check("prune 按时间升序", pruned.map(\.date) == pruned.map(\.date).sorted())
-        let capped = BalanceTrend.prune((0..<600).map { sample(Double($0) * 0.01, 1) },
-                                        now: now, limit: 100)
+        let all = (0..<600).map { sample(Double($0) * 0.01, 1) }
+        let capped = BalanceTrend.prune(all, now: now, limit: 100)
         check("prune 截断到上限", capped.count == 100, "实际 \(capped.count)")
+        check("prune 抽样保留首点", capped.first?.date == all.last?.date)
+        check("prune 抽样保留末点", capped.last?.date == all.first?.date)
+        let dense = BalanceTrend.prune((0...5760).map { sample(Double($0) * 15 / 3600, 100) },
+                                      now: now)
+        check("prune 高频采样仍覆盖 24 小时", dense.count == 500
+              && abs(BalanceTrend.span(dense) - 86400) < 1,
+              "点数 \(dense.count)，跨度 \(BalanceTrend.span(dense))")
+        check("prune 上限为 0 时返回空", BalanceTrend.prune(all, now: now, limit: 0).isEmpty)
+        check("prune 上限为 1 时保留最新点",
+              BalanceTrend.prune(all, now: now, limit: 1).first?.date == all.first?.date)
 
         // rate
         let decline = [sample(2, 100), sample(0, 98)]
@@ -455,6 +551,9 @@ enum ParserTests {
               abs((BalanceTrend.rate(decline) ?? 0) - 1.0) < 0.001)
         check("rate 余额上升（充值）→ nil",
               BalanceTrend.rate([sample(1, 100), sample(0, 120)]) == nil)
+        let recharge = [sample(3, 100), sample(2, 95), sample(1, 120), sample(0, 118)]
+        check("rate 窗口内充值不抹掉前后消耗",
+              abs((BalanceTrend.rate(recharge) ?? 0) - 7.0 / 3.0) < 0.001)
         check("rate 单点 → nil", BalanceTrend.rate([sample(1, 100)]) == nil)
 
         // span / 可靠性
@@ -469,8 +568,11 @@ enum ParserTests {
         let size = CGSize(width: 100, height: 40)
         let mapped = BalanceTrend.points([sample(2, 10), sample(1, 20), sample(0, 15)], in: size)
         check("points 数量与采样一致", mapped.count == 3, "实际 \(mapped.count)")
-        check("points 横坐标线性递增",
-              mapped[0].x == 0 && abs(mapped[2].x - 100) < 0.01 && mapped[1].x > mapped[0].x)
+        check("points 横坐标按时间递增",
+              mapped[0].x == 0 && abs(mapped[2].x - 100) < 0.01 && abs(mapped[1].x - 50) < 0.01)
+        let uneven = BalanceTrend.points([sample(4, 10), sample(3, 20), sample(0, 15)], in: size)
+        check("points 非均匀采样保留真实时间距离", abs(uneven[1].x - 25) < 0.01,
+              "实际 \(uneven[1].x)")
         // y 向下：最大值应当最靠上
         check("points 最大值最靠上", mapped[1].y < mapped[0].y && mapped[1].y < mapped[2].y)
         check("points 全在画布内", mapped.allSatisfy { $0.y >= 0 && $0.y <= size.height })

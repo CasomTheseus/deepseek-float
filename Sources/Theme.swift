@@ -172,6 +172,7 @@ struct IconButton: View {
     let systemName: String
     var help: String = ""
     var tint: Color = DS.textSecondary
+    var shortcut: KeyboardShortcut? = nil
     let action: () -> Void
 
     @State private var hovering = false
@@ -189,6 +190,7 @@ struct IconButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .keyboardShortcut(shortcut)
         .onHover { hovering = $0 }
         .help(help)
     }

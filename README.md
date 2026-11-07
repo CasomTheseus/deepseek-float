@@ -7,6 +7,7 @@
 ![macOS](https://img.shields.io/badge/macOS-14%2B-blue?style=flat-square)
 ![Apple Silicon](https://img.shields.io/badge/arch-arm64-lightgrey?style=flat-square)
 ![Swift](https://img.shields.io/badge/Swift-6.1-orange?style=flat-square)
+[![CI](https://github.com/CasomTheseus/deepseek-float/actions/workflows/ci.yml/badge.svg)](https://github.com/CasomTheseus/deepseek-float/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
 DeepSeekFloat 由两块组成：一个无边框悬浮面板，显示余额、缓存命中和用量趋势；一个菜单栏图标，
@@ -23,7 +24,7 @@ DeepSeekFloat 由两块组成：一个无边框悬浮面板，显示余额、缓
 | 峰谷时段 | 按北京时间判定，带切换倒计时；收起态在余额右边显示红「峰」绿「谷」 |
 | 余额走势 | 24 小时余额曲线，末端一个呼吸光点；采样跨度直接标在标签上 |
 | 缓存命中 | 双同心环（外环命中率、内环输出占比）、三段构成条、请求次数、分级徽章 |
-| 用量趋势 | 今日 / 24 小时 / 7 天 / 30 天 / 本月 / 90 天，柱状与热力两种画法 |
+| 用量趋势 | 今日 / 24 小时 / 7 天 / 30 天 / 本月 / 90 天，柱状悬停十字线、峰值日期与热力图 |
 | 分模型 | 每个模型的 token、费用，以及每百万 token 平均费用 |
 | 闲置淡出 | 仅收起态：指针离开一段时间后变淡并鼠标穿透，点左上角波浪图标恢复 |
 | 低余额提醒 | 面板呼吸红边加一声提示音，不走系统通知（原因见常见问题） |
@@ -31,7 +32,7 @@ DeepSeekFloat 由两块组成：一个无边框悬浮面板，显示余额、缓
 
 用量和费用有两个来源，口径不一样：平台接口是账户全量、带真实金额；本机 DSH 日志只覆盖这台机器
 发出的请求、没有金额。哪个都能用，但数字不能混着看，所以做成了显式选择。消耗速率是余额随时间的
-下滑采样，只在 App 运行期间积累，属于估算，不是账单。
+下滑采样，跨重启保留最近 24 小时，属于估算，不是账单。
 
 ## 快速开始
 
@@ -53,7 +54,7 @@ cd deepseek-float
 ./build.sh run          # 从 build/ 直接跑，不安装
 ./build.sh status       # 安装、运行、开机自启、凭据状态
 ./build.sh uninstall    # 卸载；加 --purge 连凭据和偏好一起删
-./build.sh test         # 125 项断言
+./build.sh test         # 154 项断言
 ```
 
 必须装到 `/Applications`。开机自启走 `SMAppService`，只认登记过的 bundle，
@@ -71,7 +72,8 @@ cd deepseek-float
 | Apple Silicon | 支持 |
 | Intel | 不支持。改 `build.sh` 里的 `SDK_TARGET` 为 `x86_64-apple-macos14.0` 可自行编译，我没测过 |
 | macOS 26 的 Liquid Glass | 用不了。CommandLineTools 带的 SDK 是 15.5，没有相关符号，要装完整 Xcode 26 |
-| 签名分发 | 没有。ad-hoc 签名，只在本机编译安装，没有 release 和 Homebrew |
+| CI 与打包 | GitHub Actions 自动构建、测试并上传 ZIP；推送 `v*` 标签可创建 Release |
+| 签名分发 | 仍是 ad-hoc 签名，尚未配置 Developer ID、公证或 Homebrew |
 | 系统通知 | 拿不到权限，见常见问题 |
 | 开机自启 | 支持，前提是装到 `/Applications` |
 
@@ -97,7 +99,8 @@ cd deepseek-float
 
 **平台令牌**：登录 platform.deepseek.com/usage，F12 控制台执行
 `JSON.parse(localStorage.getItem('userToken')).value`，把结果粘过来。
-整串 `{"value":"…","expireAt":…}` 直接粘也行，会自动剥壳。
+整串 `{"value":"…","expireAt":…}` 直接粘也行，会自动剥壳并保存到期时间。
+设置页会显示预计到期时间；到期后暂停平台用量请求，提示重新获取。
 
 它是网页登录态，等价于账户读权限，别在公用电脑上用。
 
@@ -219,7 +222,9 @@ ad-hoc 签名的限制，不是配置问题。几个证据：
 所以重启之后不用重新积累。
 
 采样跨度不足 30 分钟时只当参考，界面会标「样本偏少」；连两个点都还没有时显示「采样中…」，
-而不是硬给一个数字。充值会让余额上升，这时速率为空——否则会算出一个负的消耗。
+而不是硬给一个数字。超过 500 点时在整个 24 小时窗口内均匀抽样，不再删除最旧历史。
+速率累加每段实际下降金额；充值跳升不计消耗，也不会抹掉同一窗口内充值前后的消耗。
+曲线横轴按真实时间间隔布局，刷新不均匀的时段不会被拉成等距。
 
 ### 为什么不用钥匙串存凭据？
 
@@ -238,8 +243,7 @@ ad-hoc 签名的限制，不是配置问题。几个证据：
 
 - 只读不写，没有预算硬闸，也不会自动充值
 - 同时只允许一个实例，重复启动会自己退出
-- 没有 CI。断言只在本机跑通，没有跨机器验证过
-- 没有 release 和 Homebrew，也没有签名分发
+- 没有 Developer ID 签名、公证和 Homebrew；Release 工作流生成的是 ad-hoc 签名包
 
 ## 命令行与调试
 
@@ -247,7 +251,7 @@ ad-hoc 签名的限制，不是配置问题。几个证据：
 APP=build/DeepSeekFloat.app/Contents/MacOS/DeepSeekFloat
 
 DSF_API_KEY=sk-xxx $APP --selftest    # 联网自检两条通路，不打印密钥
-$APP --parsetest                      # 125 项断言
+$APP --parsetest                      # 154 项断言
 $APP --logtest                        # 读真实 DSH 日志打汇总
 
 $APP --render out.png [--settings] [--collapsed] [--empty] [--daily]
@@ -259,8 +263,8 @@ kill -USR2 $(pgrep -x DeepSeekFloat)   # 让 App 自己发一条测试通知
 kill -WINCH $(pgrep -x DeepSeekFloat)  # 切一次置顶，结果写 /tmp/dsf-top-report.txt
 ```
 
-`--demo` 用示例数据跑界面，不联网也不读真实凭据。加 `--peak` 或 `--offpeak` 能强制显示另一种价签，
-不然红「峰」得等到工作日 9 点。
+`--demo` 用示例数据跑界面，不联网也不读真实凭据。加 `--bars` / `--heat` 可指定图表；
+加 `--peak` 或 `--offpeak` 能强制显示另一种价签，不然红「峰」得等到工作日 9 点。
 
 环境变量也能给凭据：`DEEPSEEK_API_KEY` / `DSF_API_KEY`，`DEEPSEEK_USER_TOKEN` / `DSF_USER_TOKEN`。
 界面保存的值优先。
@@ -322,13 +326,28 @@ DeepSeekFloat/
 - 预览和渲染模式不写 `UserDefaults`，否则 `--render --collapsed` 会把真实配置改成收起
 
 界面里那些微交互（气泡、数字滚动、双环、热力图）列在
-[docs/视觉细节候选清单.md](docs/视觉细节候选清单.md)，里面还有没做的 17 条。
+[docs/视觉细节候选清单.md](docs/视觉细节候选清单.md)，里面还有没做的 13 条。
 
 ## License
 
 MIT
 
 ## 更新日志
+
+### v1.6.0 · 2026-11-07
+
+稳定性与数据可信度更新：
+
+- 余额与用量并行刷新；来源、范围或凭据变化会取消旧任务，并用 generation 阻止旧响应覆盖新数据
+- 429 读取 `Retry-After`，网络错误、WAF 与 5xx 采用带随机抖动的指数退避，最长 5 分钟
+- 24 小时余额历史超限时改为全窗口均匀抽样；充值不再抹掉消耗估算，曲线横轴使用真实时间戳
+- DSH 日志改为异步逐行读取，不再把整个解压文件载入内存；文件缓存限制为 25 万条记录
+- 保存并显示平台令牌到期时间，到期后停止无效请求
+- 柱状图增加悬停十字线与明细浮层，趋势图峰值带日期，刷新支持 `⌘R`
+- 新增 GitHub Actions 构建、测试、ZIP 产物和标签 Release 工作流
+
+断言 125 → 154，新增退避、令牌解析、24 小时抽样、充值分段、非均匀时间轴，
+以及旧请求延迟成功 / 失败时不得覆盖新来源的异步回归测试。
 
 ### v1.5.1 · 2026-11-02
 

@@ -43,6 +43,7 @@ actor DSHLogSource {
     /// 按路径缓存解析结果，只重解析有变化的文件。
     /// 不缓存的话每次刷新都要解压 20 MB 日志，纯浪费。
     private var fileCache: [String: CachedFile] = [:]
+    private let cacheRecordLimit = 250_000
 
     private static var sessionsRoot: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -130,7 +131,7 @@ actor DSHLogSource {
 
     // MARK: - 读日志
 
-    private func loadRecords() throws -> [Record] {
+    private func loadRecords() async throws -> [Record] {
         guard let zstd = zstdExecutable() else {
             throw LogSourceError.zstdMissing
         }
@@ -143,6 +144,7 @@ actor DSHLogSource {
         var firstError: Error?
 
         for file in files {
+            try Task.checkCancellation()
             let path = file.path
             seen.insert(path)
             let values = try? file.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
@@ -155,7 +157,7 @@ actor DSHLogSource {
             }
 
             do {
-                let parsed = try parse(file: file, zstd: zstd)
+                let parsed = try await parse(file: file, zstd: zstd)
                 fileCache[path] = CachedFile(size: size, modified: modified, records: parsed)
                 records.append(contentsOf: parsed)
             } catch {
@@ -165,8 +167,16 @@ actor DSHLogSource {
             }
         }
 
-        // 清掉已经消失的会话，避免缓存无限增长
         fileCache = fileCache.filter { seen.contains($0.key) }
+        var cachedCount = fileCache.values.reduce(0) { $0 + $1.records.count }
+        if cachedCount > cacheRecordLimit {
+            let oldestFirst = fileCache.sorted { $0.value.modified < $1.value.modified }
+            for entry in oldestFirst {
+                cachedCount -= entry.value.records.count
+                fileCache.removeValue(forKey: entry.key)
+                if cachedCount <= cacheRecordLimit { break }
+            }
+        }
 
         if records.isEmpty, let firstError { throw firstError }
         return records
@@ -196,7 +206,7 @@ actor DSHLogSource {
         return files
     }
 
-    private func parse(file: URL, zstd: String) throws -> [Record] {
+    private func parse(file: URL, zstd: String) async throws -> [Record] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: zstd)
         process.arguments = ["-dc", file.path]
@@ -209,46 +219,51 @@ actor DSHLogSource {
         } catch {
             throw LogSourceError.decompressFailed("\(file.lastPathComponent)：\(error.localizedDescription)")
         }
-        // readDataToEndOfFile 会一边读一边排空管道，不会把子进程堵死
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        defer { if process.isRunning { process.terminate() } }
+
+        var records: [Record] = []
+        for try await line in stdout.fileHandleForReading.bytes.lines {
+            try Task.checkCancellation()
+            if let record = Self.parse(line: Data(line.utf8)) { records.append(record) }
+        }
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
             throw LogSourceError.decompressFailed("\(file.lastPathComponent)：zstd 退出码 \(process.terminationStatus)")
         }
-        return Self.parse(jsonl: data)
+        return records
     }
 
     /// 从解压后的 JSONL 中抽取带 `data.usage` 的记录。
     /// 单独抽成静态函数，方便用合成夹具做断言（不碰真实日志）。
     static func parse(jsonl data: Data) -> [Record] {
-        var records: [Record] = []
-        for line in data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true) {
-            guard line.contains(UInt8(ascii: "u")),
-                  let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                  let payload = object["data"] as? [String: Any],
-                  let usage = payload["usage"] as? [String: Any],
-                  let timeMilliseconds = number(object["time"])
-            else { continue }
+        data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
+            .compactMap { parse(line: Data($0)) }
+    }
 
-            let hit = Int64(number(usage["cacheReadTokens"]) ?? 0)
-            let miss = Int64(number(usage["inputTokens"]) ?? 0)
-            let output = Int64(number(usage["outputTokens"]) ?? 0)
-            let date = Date(timeIntervalSince1970: timeMilliseconds / 1000)
+    private static func parse(line: Data) -> Record? {
+        guard line.contains(UInt8(ascii: "u")),
+              let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let payload = object["data"] as? [String: Any],
+              let usage = payload["usage"] as? [String: Any],
+              let timeMilliseconds = number(object["time"])
+        else { return nil }
 
-            var model: String?
-            if let message = payload["message"] as? [String: Any],
-               let source = message["source"] as? [String: Any],
-               let name = source["model"] as? String, !name.isEmpty {
-                model = name
-            }
-            // 压缩摘要这类记录带 usage 但没有模型归属。它们确实花了 token，
-            // 不能丢；但叫「未知模型」等于没说，所以按记录类型给个明确名字。
-            let label = model ?? Self.fallbackLabel(for: object["type"] as? String)
+        let hit = Int64(number(usage["cacheReadTokens"]) ?? 0)
+        let miss = Int64(number(usage["inputTokens"]) ?? 0)
+        let output = Int64(number(usage["outputTokens"]) ?? 0)
+        let date = Date(timeIntervalSince1970: timeMilliseconds / 1000)
 
-            records.append(Record(time: date, model: label, hit: hit, miss: miss, output: output))
+        var model: String?
+        if let message = payload["message"] as? [String: Any],
+           let source = message["source"] as? [String: Any],
+           let name = source["model"] as? String, !name.isEmpty {
+            model = name
         }
-        return records
+        // 压缩摘要这类记录带 usage 但没有模型归属。它们确实花了 token，
+        // 不能丢；但叫「未知模型」等于没说，所以按记录类型给个明确名字。
+        let label = model ?? Self.fallbackLabel(for: object["type"] as? String)
+        return Record(time: date, model: label, hit: hit, miss: miss, output: output)
     }
 
     /// 没有 model 字段时按记录类型给标签

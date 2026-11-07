@@ -16,6 +16,7 @@ final class CredentialStore {
     private struct Payload: Codable {
         var apiKey: String = ""
         var userToken: String = ""
+        var userTokenExpiresAt: Date?
     }
 
     private let fileManager = FileManager.default
@@ -86,6 +87,14 @@ final class CredentialStore {
 
     var hasAPIKey: Bool { !apiKey.trimmingCharacters(in: .whitespaces).isEmpty }
     var hasUserToken: Bool { !userToken.trimmingCharacters(in: .whitespaces).isEmpty }
+    var userTokenExpiresAt: Date? {
+        lock.lock(); defer { lock.unlock() }
+        return payload.userTokenExpiresAt
+    }
+    func isUserTokenExpired(now: Date = Date()) -> Bool {
+        guard let expiresAt = userTokenExpiresAt else { return false }
+        return expiresAt <= now
+    }
 
     func setAPIKey(_ value: String) {
         lock.lock()
@@ -95,22 +104,34 @@ final class CredentialStore {
     }
 
     func setUserToken(_ value: String) {
+        let normalized = Self.normalizeToken(value)
         lock.lock()
-        payload.userToken = normalizeToken(value)
+        payload.userToken = normalized.token
+        payload.userTokenExpiresAt = normalized.expiresAt
         lock.unlock()
         persist()
     }
 
-    /// 用户从浏览器控制台粘过来的可能是 `{"value":"..."}` 或带引号的原文，这里统一剥壳
-    private func normalizeToken(_ raw: String) -> String {
+    /// 用户从浏览器控制台粘过来的可能是 `{"value":"..."}` 或带引号的原文，这里统一剥壳，
+    /// 同时保留网页登录态自带的到期时间。
+    static func normalizeToken(_ raw: String) -> (token: String, expiresAt: Date?) {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var expiresAt: Date?
         if s.hasPrefix("{"), let data = s.data(using: .utf8),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let v = obj["value"] as? String {
-            s = v
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let value = obj["value"] as? String { s = value }
+            if let timestamp = tokenTimestamp(obj["expireAt"]) {
+                expiresAt = Date(timeIntervalSince1970: timestamp > 100_000_000_000 ? timestamp / 1000 : timestamp)
+            }
         }
         s = s.trimmingCharacters(in: CharacterSet(charactersIn: "\"' \n\r\t"))
-        return s
+        return (s, expiresAt)
+    }
+
+    private static func tokenTimestamp(_ value: Any?) -> TimeInterval? {
+        if let number = value as? NSNumber { return number.doubleValue }
+        if let string = value as? String { return TimeInterval(string) }
+        return nil
     }
 
     func clearAll() {

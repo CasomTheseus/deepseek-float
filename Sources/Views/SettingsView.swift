@@ -170,6 +170,15 @@ struct SettingsView: View {
                         .lineSpacing(1.5)
                         .textSelection(.enabled)
 
+                    if let expiresAt = model.userTokenExpiresAt {
+                        Text((model.isUserTokenExpired ? "登录态已于 " : "登录态预计于 ")
+                             + expiresAt.formatted(date: .abbreviated, time: .shortened)
+                             + (model.isUserTokenExpired ? " 到期，请重新获取" : " 到期"))
+                            .font(.system(size: 9))
+                            .foregroundStyle(model.isUserTokenExpired ? DS.spend : DS.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                 case .none:
                     Text("不显示用量，只保留余额。")
                         .font(.system(size: 9))

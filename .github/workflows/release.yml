@@ -1,0 +1,30 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package-and-release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag matches app version
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)
+          test "$GITHUB_REF_NAME" = "v$VERSION"
+      - name: Build and test
+        run: ./build.sh test
+      - name: Package and checksum
+        run: |
+          ./build.sh package
+          cd build
+          shasum -a 256 DeepSeekFloat.zip > DeepSeekFloat.zip.sha256
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" build/DeepSeekFloat.zip build/DeepSeekFloat.zip.sha256 --title "DeepSeekFloat $GITHUB_REF_NAME" --generate-notes

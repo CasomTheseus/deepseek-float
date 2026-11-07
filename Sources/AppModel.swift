@@ -113,13 +113,38 @@ final class AppModel: ObservableObject {
     private var lastMonthlyFetch: Date = .distantPast
     private var lowBalanceNotified = false
     private var lastKnownTotal: Double?
+    private var refreshTask: Task<Void, Never>?
     private var balanceTask: Task<Void, Never>?
     private var usageTask: Task<Void, Never>?
+    private var balanceGeneration = 0
+    private var usageGeneration = 0
+    private var balanceFailures = 0
+    private var usageFailures = 0
+    private var nextBalanceFetch: Date = .distantPast
+    private var nextUsageFetch: Date = .distantPast
 
     private let credentials = CredentialStore.shared
+    private let balanceFetcher: (String) async throws -> BalanceSnapshot
+    private let usageFetcher: (String, UsageRange) async throws -> UsageSnapshot
+    private let monthlyUsageFetcher: (String) async throws -> UsageSnapshot
+    private let localUsageFetcher: (UsageRange) async throws -> UsageSnapshot
 
     init(startAutomatically: Bool = true, withSampleData: Bool = true, sampleDaily: Bool = false,
-         sampleLocalSource: Bool = false) {
+         sampleLocalSource: Bool = false,
+         balanceFetcher: @escaping (String) async throws -> BalanceSnapshot = DeepSeekAPI.fetchBalance,
+         usageFetcher: @escaping (String, UsageRange) async throws -> UsageSnapshot = { token, range in
+             try await DeepSeekAPI.fetchWindowUsage(userToken: token, range: range)
+         },
+         monthlyUsageFetcher: @escaping (String) async throws -> UsageSnapshot = { token in
+             try await DeepSeekAPI.fetchMonthlyUsage(userToken: token)
+         },
+         localUsageFetcher: @escaping (UsageRange) async throws -> UsageSnapshot = { range in
+             try await DSHLogSource.shared.snapshot(for: range)
+         }) {
+        self.balanceFetcher = balanceFetcher
+        self.usageFetcher = usageFetcher
+        self.monthlyUsageFetcher = monthlyUsageFetcher
+        self.localUsageFetcher = localUsageFetcher
         loadPreferences()
         balanceHistory = BalanceTrend.prune(BalanceHistoryStore.load(), now: Date())
         syncCredentialFlags()
@@ -130,7 +155,7 @@ final class AppModel: ObservableObject {
             loaded = true
             restartTimer()
             refreshNotificationStatus()
-            Task { await refresh(force: true) }
+            refresh(force: true)
         } else if withSampleData {
             installSampleData(daily: sampleDaily, localSource: sampleLocalSource)
         }
@@ -348,22 +373,31 @@ final class AppModel: ObservableObject {
         syncCredentialFlags()
         lowBalanceNotified = false
         lastBalanceFetch = .distantPast
-        Task { await refresh(force: true) }
+        balanceFailures = 0
+        nextBalanceFetch = .distantPast
+        refresh(force: true)
     }
 
     func saveUserToken(_ value: String) {
         credentials.setUserToken(value)
         syncCredentialFlags()
-        lastUsageFetch = .distantPast
-        Task { await refreshUsage(force: true) }
+        requestUsageRefresh()
     }
 
     func clearCredentials() {
+        refreshTask?.cancel()
+        balanceTask?.cancel()
+        usageTask?.cancel()
+        balanceGeneration += 1
+        usageGeneration += 1
         credentials.clearAll()
         syncCredentialFlags()
         balance = nil; usage = nil; monthlyUsage = nil
         balanceError = nil; usageError = nil
         balanceHistory = []
+        balanceFailures = 0; usageFailures = 0
+        nextBalanceFetch = .distantPast; nextUsageFetch = .distantPast
+        isRefreshing = false
     }
 
     func importKeyFromDSH() -> Bool {
@@ -373,16 +407,37 @@ final class AppModel: ObservableObject {
     }
 
     var dshAvailable: Bool { CredentialStore.dshCredentialFileExists }
+    var userTokenExpiresAt: Date? { credentials.userTokenExpiresAt }
+    var isUserTokenExpired: Bool { credentials.isUserTokenExpired() }
+
+    func setCredentialFlagsForTesting(apiKey: Bool, userToken: Bool) {
+        hasAPIKey = apiKey
+        hasUserToken = userToken
+    }
 
     // MARK: - 刷新
 
-    func refresh(force: Bool = false) async {
+    func refresh(force: Bool = false) {
         if isRefreshing && !force { return }
+
+        balanceGeneration += 1
+        usageGeneration += 1
+        refreshTask?.cancel()
+        balanceTask?.cancel()
+        usageTask?.cancel()
         isRefreshing = true
-        defer { isRefreshing = false }
-        await refreshBalance(force: force)
-        await refreshUsage(force: force)
-        lastRefresh = Date()
+
+        balanceTask = Task { [weak self] in await self?.refreshBalance(force: force) }
+        usageTask = Task { [weak self] in await self?.refreshUsage(force: force) }
+        let balanceTask = self.balanceTask
+        let usageTask = self.usageTask
+        refreshTask = Task { [weak self] in
+            await balanceTask?.value
+            await usageTask?.value
+            guard let self, !Task.isCancelled else { return }
+            self.lastRefresh = Date()
+            self.isRefreshing = false
+        }
     }
 
     func refreshBalance(force: Bool = false) async {
@@ -391,80 +446,134 @@ final class AppModel: ObservableObject {
             balance = nil
             return
         }
-        // 防抖：短时间内的重复请求直接合并，避免连点右键菜单打爆接口
+        let now = Date()
+        guard now >= nextBalanceFetch else { return }
         let minGap: TimeInterval = force ? 1.0 : 5.0
-        if Date().timeIntervalSince(lastBalanceFetch) < minGap, balance != nil { return }
-        lastBalanceFetch = Date()
+        if now.timeIntervalSince(lastBalanceFetch) < minGap, balance != nil { return }
+
+        balanceGeneration += 1
+        let generation = balanceGeneration
+        let apiKey = credentials.apiKey
+        lastBalanceFetch = now
 
         do {
-            let snapshot = try await DeepSeekAPI.fetchBalance(apiKey: credentials.apiKey)
+            let snapshot = try await balanceFetcher(apiKey)
+            guard generation == balanceGeneration, !Task.isCancelled else { return }
             balance = snapshot
             balanceError = nil
+            balanceFailures = 0
+            nextBalanceFetch = .distantPast
             recordBalanceSample(snapshot)
             recordDelta(snapshot)
             evaluateLowBalance(snapshot)
         } catch {
+            guard generation == balanceGeneration, !Task.isCancelled else { return }
             balanceError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            guard let error = error as? DSFloatError, error.isTransient else {
+                balanceFailures = 0
+                nextBalanceFetch = .distantPast
+                return
+            }
+            balanceFailures += 1
+            let delay = RefreshBackoff.delay(failureCount: balanceFailures,
+                                             retryAfter: error.retryAfter,
+                                             jitter: .random(in: 0...1))
+            nextBalanceFetch = Date().addingTimeInterval(delay)
         }
     }
 
     func refreshUsage(force: Bool = false) async {
-        let minGap: TimeInterval = force ? 1.0 : 20.0
-        if Date().timeIntervalSince(lastUsageFetch) < minGap, usage != nil { return }
-        lastUsageFetch = Date()
-
-        switch usageSource {
-        case .none:
+        let source = usageSource
+        let selectedRange = range
+        if source == .none {
             usage = nil
             monthlyUsage = nil
             usageError = nil
             return
-
-        case .localLog:
-            // 本地日志自带分模型，不需要月度接口
-            do {
-                usage = try await DSHLogSource.shared.snapshot(for: range)
-                usageError = nil
-            } catch {
-                usage = nil
-                usageError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
-            monthlyUsage = nil
-            return
-
-        case .platform:
-            break
         }
 
-        guard hasUserToken else {
+        let now = Date()
+        guard now >= nextUsageFetch else { return }
+        let minGap: TimeInterval = force ? 1.0 : 20.0
+        if now.timeIntervalSince(lastUsageFetch) < minGap, usage != nil { return }
+        if source == .platform, !hasUserToken {
             usageError = nil
+            return
+        }
+        if source == .platform, credentials.isUserTokenExpired(now: now) {
+            usageError = DSFloatError.expiredUserToken.errorDescription
+            return
+        }
+
+        usageGeneration += 1
+        let generation = usageGeneration
+        let userToken = credentials.userToken
+        lastUsageFetch = now
+
+        if source == .localLog {
+            do {
+                let snapshot = try await localUsageFetcher(selectedRange)
+                guard generation == usageGeneration, source == usageSource,
+                      selectedRange == range, !Task.isCancelled else { return }
+                usage = snapshot
+                usageError = nil
+                monthlyUsage = nil
+            } catch {
+                guard generation == usageGeneration, source == usageSource,
+                      selectedRange == range, !Task.isCancelled else { return }
+                usageError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
             return
         }
 
         do {
-            let snapshot = try await DeepSeekAPI.fetchWindowUsage(userToken: credentials.userToken, range: range)
+            let snapshot = try await usageFetcher(userToken, selectedRange)
+            guard generation == usageGeneration, source == usageSource,
+                  selectedRange == range, !Task.isCancelled else { return }
             usage = snapshot
             usageError = nil
+            usageFailures = 0
+            nextUsageFetch = .distantPast
         } catch {
+            guard generation == usageGeneration, source == usageSource,
+                  selectedRange == range, !Task.isCancelled else { return }
             usageError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            guard let error = error as? DSFloatError, error.isTransient else {
+                usageFailures = 0
+                nextUsageFetch = .distantPast
+                return
+            }
+            usageFailures += 1
+            let delay = RefreshBackoff.delay(failureCount: usageFailures,
+                                             retryAfter: error.retryAfter,
+                                             jitter: .random(in: 0...1))
+            nextUsageFetch = Date().addingTimeInterval(delay)
+            return
         }
 
         // 分模型 / 请求次数只有月度接口给。首次必拉；之后按 10 分钟节流，
         // 免得停在「今日」范围时模型卡片一直不更新。
         let monthlyStale = Date().timeIntervalSince(lastMonthlyFetch) > 600
-        if range.isMonthlyAPIWorthwhile || monthlyUsage == nil || (monthlyStale && force) {
-            if let monthly = try? await DeepSeekAPI.fetchMonthlyUsage(userToken: credentials.userToken) {
+        if selectedRange.isMonthlyAPIWorthwhile || monthlyUsage == nil || (monthlyStale && force) {
+            if let monthly = try? await monthlyUsageFetcher(userToken) {
+                guard generation == usageGeneration, source == usageSource,
+                      selectedRange == range, !Task.isCancelled else { return }
                 monthlyUsage = monthly
                 lastMonthlyFetch = Date()
             }
         }
     }
 
-    /// 范围切换时立刻拉新数据（带节流）。
+    /// 范围或来源切换时取消旧任务；即使旧请求无法及时取消，generation 也会阻止它写回。
     /// `loaded` 为假说明是预览/渲染模式，绝不能因为改个属性就去联网。
     private func requestUsageRefresh() {
         guard loaded else { return }
-        Task { await refreshUsage(force: true) }
+        usageGeneration += 1
+        usageTask?.cancel()
+        usageFailures = 0
+        nextUsageFetch = .distantPast
+        lastUsageFetch = .distantPast
+        usageTask = Task { [weak self] in await self?.refreshUsage(force: true) }
     }
 
     // MARK: - 定时
@@ -478,7 +587,7 @@ final class AppModel: ObservableObject {
     private func restartTimer() {
         timer?.invalidate()
         let t = Timer.scheduledTimer(withTimeInterval: effectiveInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.refresh() }
+            Task { @MainActor in self?.refresh() }
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -489,7 +598,7 @@ final class AppModel: ObservableObject {
         panelVisible = visible
         guard hideWhenIdle, previous != visible else { return }
         restartTimer()
-        if visible { Task { await refresh() } }
+        if visible { refresh() }
     }
 
     /// 与上一次已知余额比较，产生一枚会飘走的气泡。

@@ -19,17 +19,23 @@ enum BalanceTrend {
     /// 采样少于这个时长时，速率只当参考，不当结论
     static let reliableSpan: TimeInterval = 30 * 60
 
-    /// 丢弃过期采样、按时间排序、截断到上限。
+    /// 丢弃过期采样、按时间排序，并在整个窗口内均匀抽样。
+    /// 超出上限时不能直接删除最旧点，否则高频刷新会把「24 小时」缩成最近几小时。
     static func prune(_ samples: [BalanceSample],
                       now: Date,
                       window: TimeInterval = window,
                       limit: Int = limit) -> [BalanceSample] {
         let cutoff = now.addingTimeInterval(-window)
-        var kept = samples
+        let kept = samples
             .filter { $0.date >= cutoff && $0.date <= now.addingTimeInterval(60) }
             .sorted { $0.date < $1.date }
-        if kept.count > limit { kept.removeFirst(kept.count - limit) }
-        return kept
+        guard kept.count > limit else { return kept }
+        guard limit > 1 else { return limit == 1 ? [kept[kept.count - 1]] : [] }
+
+        return (0..<limit).map { index in
+            let sourceIndex = Int((Double(index) / Double(limit - 1) * Double(kept.count - 1)).rounded())
+            return kept[sourceIndex]
+        }
     }
 
     /// 采样跨度（秒）。少于两个点时为 0。
@@ -38,15 +44,18 @@ enum BalanceTrend {
         return max(0, last.date.timeIntervalSince(first.date))
     }
 
-    /// 每小时消耗（元/小时）。只算余额下降的部分；充值会让 delta 为负，此时返回 nil。
+    /// 每小时消耗（元/小时）。累加每段余额下降；充值跳升本身不计消耗，
+    /// 但也不会抹掉同一采样窗口内已经发生的消耗。
     static func rate(_ samples: [BalanceSample]) -> Double? {
         guard samples.count >= 2,
               let first = samples.first, let last = samples.last else { return nil }
         let hours = last.date.timeIntervalSince(first.date) / 3600
         guard hours > 0.05 else { return nil }
-        let delta = first.total - last.total
-        guard delta > 0 else { return nil }
-        return delta / hours
+        let spent = zip(samples, samples.dropFirst()).reduce(0.0) { partial, pair in
+            partial + max(0, pair.0.total - pair.1.total)
+        }
+        guard spent > 0 else { return nil }
+        return spent / hours
     }
 
     /// 采样是否够长，够的话速率的量级才值得当真
@@ -75,8 +84,11 @@ enum BalanceTrend {
         let noiseFloor = max(maxValue, 1) * 0.004
         let compress = noiseFloor > 0 ? min(1, range / noiseFloor) : 1
 
-        return samples.enumerated().map { index, sample in
-            let x = CGFloat(index) / CGFloat(samples.count - 1) * size.width
+        let start = samples[0].date
+        let duration = samples[samples.count - 1].date.timeIntervalSince(start)
+        return samples.map { sample in
+            let progress = duration > 0 ? sample.date.timeIntervalSince(start) / duration : 0
+            let x = CGFloat(progress) * size.width
             let ratio = range > 0.0001 ? (sample.total - minValue) / range : 0.5
             let centered = 0.5 + (ratio - 0.5) * compress
             let y = size.height - inset - CGFloat(centered) * usable

@@ -191,10 +191,11 @@ struct WidgetView: View {
 
             IconButton(
                 systemName: model.isRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise",
-                help: "立即刷新",
-                tint: model.isRefreshing ? DS.accentSoft : DS.textSecondary
+                help: "立即刷新 ⌘R",
+                tint: model.isRefreshing ? DS.accentSoft : DS.textSecondary,
+                shortcut: KeyboardShortcut("r")
             ) {
-                Task { await model.refresh(force: true) }
+                model.refresh(force: true)
             }
             IconButton(systemName: "gearshape", help: "设置") {
                 model.showSettings = true

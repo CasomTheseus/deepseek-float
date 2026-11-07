@@ -28,7 +28,7 @@ struct DeepSeekFloatApp {
 
         // 解析器夹具测试：离线校验两族接口的响应形状
         if arguments.contains("--parsetest") {
-            exit(ParserTests.run() == 0 ? 0 : 1)
+            exit(await ParserTests.run() == 0 ? 0 : 1)
         }
 
         // 本地日志源：把真实 DSH 日志读一遍并打印汇总，用于验收取数是否正确

@@ -199,8 +199,9 @@ enum DSFloatError: LocalizedError, Equatable {
     case insufficientBalance
     case missingUserToken
     case invalidUserToken
+    case expiredUserToken
     case wafBlocked
-    case rateLimited
+    case rateLimited(retryAfter: TimeInterval?)
     case http(Int, String)
     case network(String)
     case decoding(String)
@@ -217,9 +218,14 @@ enum DSFloatError: LocalizedError, Equatable {
             return "未填写平台访问令牌，无法读取 token 用量"
         case .invalidUserToken:
             return "平台访问令牌已失效，请在 platform.deepseek.com 重新获取（40003）"
+        case .expiredUserToken:
+            return "平台登录态已到期，请在 platform.deepseek.com 重新获取"
         case .wafBlocked:
             return "被 platform.deepseek.com 的 WAF 拦截，请稍后重试"
-        case .rateLimited:
+        case let .rateLimited(retryAfter):
+            if let retryAfter {
+                return "请求过于频繁，已自动降速（\(Int(ceil(retryAfter))) 秒后再试）"
+            }
             return "请求过于频繁，已自动降速"
         case let .http(code, msg):
             return "HTTP \(code)" + (msg.isEmpty ? "" : "：\(msg)")
@@ -234,8 +240,40 @@ enum DSFloatError: LocalizedError, Equatable {
     var isTransient: Bool {
         switch self {
         case .wafBlocked, .rateLimited, .network: return true
+        case .http(let code, _): return (500...599).contains(code)
         default: return false
         }
+    }
+
+    var retryAfter: TimeInterval? {
+        if case .rateLimited(let seconds) = self { return seconds }
+        return nil
+    }
+}
+
+/// 临时错误的刷新退避。定时器仍按原周期唤醒，但未到重试时间时不会发请求。
+enum RefreshBackoff {
+    static let maximum: TimeInterval = 300
+
+    static func delay(failureCount: Int, retryAfter: TimeInterval? = nil,
+                      jitter: Double = 0.5) -> TimeInterval {
+        if let retryAfter { return min(maximum, max(1, retryAfter)) }
+        let exponent = min(5, max(0, failureCount - 1))
+        let base = min(maximum, 15 * pow(2, Double(exponent)))
+        return min(maximum, base * (0.8 + 0.4 * min(1, max(0, jitter))))
+    }
+
+    static func retryAfter(from header: String?, now: Date = Date()) -> TimeInterval? {
+        guard let header = header?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !header.isEmpty else { return nil }
+        if let seconds = TimeInterval(header) { return max(0, seconds) }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        guard let date = formatter.date(from: header) else { return nil }
+        return max(0, date.timeIntervalSince(now))
     }
 }
 

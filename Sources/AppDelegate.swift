@@ -40,6 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ? AppModel(startAutomatically: false, withSampleData: true)
             : AppModel()
         model.peakOverride = peakOverride
+        if CommandLine.arguments.contains("--bars") { model.chartMode = .bars }
+        if CommandLine.arguments.contains("--heat") { model.chartMode = .heat }
         if openSettings { model.showSettings = true }
         panelController = FloatingPanelController(model: model)
         statusController = StatusItemController(model: model, panelController: panelController)
@@ -74,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let source = DispatchSource.makeSignalSource(signal: SIGHUP, queue: .main)
         source.setEventHandler { [weak self] in
             guard let self else { return }
-            Task { @MainActor in await self.model.refresh(force: true) }
+            self.model.refresh(force: true)
         }
         source.resume()
         reloadSignal = source
