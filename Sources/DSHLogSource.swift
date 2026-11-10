@@ -5,8 +5,8 @@ import Foundation
 /// 为什么需要这条通路：平台用量接口认的是**网页登录态**（`userToken`），
 /// 属于「账户」作用域。当 API Key 是别人给的、而你登录的不是同一个账户时，
 /// 那个接口给出的数字与这把 Key 无关，两者混在一起显示会误导。
-/// 本地日志记的则是「这台机器、这个 DSH、用当前 Key 实际发出的请求」，
-/// 口径正好对得上，而且不需要任何账户级凭据。
+/// 本地日志记的是「这台机器、这个 DSH 的全部会话」，不需要任何账户级凭据。
+/// 日志记录中没有可用于按 API Key 汇总的字段，因此不能声称只统计当前 Key。
 ///
 /// 日志格式（2026-10 实测）：
 ///   `~/.dsh/sessions/<project>/<session>/session.v4.jsonl.zstd`
@@ -20,6 +20,7 @@ import Foundation
 ///
 /// 局限（必须在 UI 上说清楚）：
 ///   · 只覆盖 DSH 的流量，同一把 Key 在别处的调用不在这里
+///   · 不按 API Key 过滤；本机历史上换过 Key 时仍会累计所有会话
 ///   · 日志没有金额字段，所以这个来源只能给 token 与命中率
 actor DSHLogSource {
     static let shared = DSHLogSource()
@@ -80,7 +81,7 @@ actor DSHLogSource {
 
         var snapshot = UsageSnapshot()
         snapshot.hasCost = false
-        snapshot.scopeNote = "本机 DSH · \(range.title)"
+        snapshot.scopeNote = "本机 DSH 全会话 · \(range.title)"
         snapshot.fetchedAt = now
 
         guard !records.isEmpty else { return snapshot }

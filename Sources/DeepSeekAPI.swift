@@ -16,7 +16,9 @@ enum DeepSeekAPI {
 
     // MARK: - URLSession
 
-    private static let session: URLSession = {
+    private static var session = makeSession()
+
+    private static func makeSession() -> URLSession {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 20
         cfg.timeoutIntervalForResource = 40
@@ -24,7 +26,11 @@ enum DeepSeekAPI {
         cfg.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         cfg.httpAdditionalHeaders = ["Connection": "close"]
         return URLSession(configuration: cfg)
-    }()
+    }
+
+    static func setSessionForTesting(_ testSession: URLSession?) {
+        session = testSession ?? makeSession()
+    }
 
     /// platform.deepseek.com 前面有 WAF，必须装成浏览器，否则直接被挡
     private static func platformHeaders(token: String) -> [String: String] {

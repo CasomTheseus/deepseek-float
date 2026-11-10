@@ -26,7 +26,7 @@ struct DeepSeekFloatApp {
             exit(Notifier.runCLITest())
         }
 
-        // 解析器夹具测试：离线校验两族接口的响应形状
+        // 离线回归测试：解析器、刷新调度与伪 URL 网络传输
         if arguments.contains("--parsetest") {
             exit(await ParserTests.run() == 0 ? 0 : 1)
         }

@@ -1,9 +1,59 @@
 import Foundation
 
-/// 解析器夹具测试：`DeepSeekFloat --parsetest`
+private final class MockURLProtocol: URLProtocol {
+    struct Response {
+        let status: Int
+        let body: String
+        var headers: [String: String] = [:]
+    }
+
+    static var handler: ((URLRequest) throws -> Response)?
+    static var delay: TimeInterval = 0
+    static var requestPaths: [String] = []
+    static var lastAuthorization: String?
+    private var stopped = false
+
+    static func reset() {
+        handler = nil
+        delay = 0
+        requestPaths = []
+        lastAuthorization = nil
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.requestPaths.append(request.url?.path ?? "")
+        Self.lastAuthorization = request.value(forHTTPHeaderField: "Authorization")
+        if Self.delay > 0 {
+            DispatchQueue.global().asyncAfter(deadline: .now() + Self.delay) { [weak self] in self?.respond() }
+        } else {
+            respond()
+        }
+    }
+
+    override func stopLoading() { stopped = true }
+
+    private func respond() {
+        guard !stopped, let handler = Self.handler else { return }
+        do {
+            let mock = try handler(request)
+            let response = HTTPURLResponse(url: request.url!, statusCode: mock.status,
+                                           httpVersion: nil, headerFields: mock.headers)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(mock.body.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+}
+
+/// 离线回归测试：`DeepSeekFloat --parsetest`
 ///
-/// 平台的用量接口是未公开接口，没有可离线依赖的沙箱，而解析器恰好是风险最高的一环。
-/// 这里把两个开源实现里观察到的**真实响应形状**固化成夹具，断言解析结果。
+/// 平台的用量接口是未公开接口，因此把真实响应形状固化成夹具，并用伪 URL 响应
+/// 覆盖状态码、请求头、路径回退和取消，无需真实账号或联网。
 /// 尤其覆盖「`total` 与 `days` 不能相加」这条最容易写错、且错了会翻倍计费的规则。
 enum ParserTests {
 
@@ -15,7 +65,7 @@ enum ParserTests {
         failures = 0
         checks = 0
 
-        print("── 解析器夹具测试 ──")
+        print("── 离线回归测试 ──")
 
         balance()
         windowAmount()
@@ -25,6 +75,7 @@ enum ParserTests {
         missingFields()
         refreshBackoff()
         await refreshRace()
+        await networkTransport()
         credentials()
         peakSchedule()
         balanceDelta()
@@ -253,7 +304,7 @@ enum ParserTests {
                     return snapshot("平台响应")
                 },
                 localUsageFetcher: { requestedRange in
-                    snapshot("本机 DSH · \(requestedRange.title)")
+                    snapshot("本机 DSH 全会话 · \(requestedRange.title)")
                 }
             )
             model.setCredentialFlagsForTesting(apiKey: false, userToken: true)
@@ -268,11 +319,157 @@ enum ParserTests {
             await oldRequest.value
 
             let phase = oldRequestFails ? "旧失败" : "旧成功"
-            check("race.\(phase)响应不覆盖新来源", model.usage?.scopeNote == "本机 DSH · 7天",
+            check("race.\(phase)响应不覆盖新来源", model.usage?.scopeNote == "本机 DSH 全会话 · 7天",
                   model.usage?.scopeNote ?? "nil")
             check("race.\(phase)响应不污染新错误态", model.usageError == nil,
                   model.usageError ?? "nil")
         }
+    }
+
+    // MARK: - 网络传输层
+
+    @MainActor
+    private static func networkTransport() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        DeepSeekAPI.setSessionForTesting(session)
+        defer {
+            DeepSeekAPI.setSessionForTesting(nil)
+            session.finishTasksAndInvalidate()
+        }
+
+        func expectError(_ label: String,
+                         _ operation: () async throws -> Void,
+                         _ matches: (DSFloatError) -> Bool) async {
+            do {
+                try await operation()
+                check(label, false, "请求意外成功")
+            } catch let error as DSFloatError {
+                check(label, matches(error), error.errorDescription ?? "\(error)")
+            } catch {
+                check(label, false, "错误类型 \(error)")
+            }
+        }
+
+        MockURLProtocol.reset()
+        MockURLProtocol.handler = { _ in .init(status: 200, body: balanceJSON) }
+        do {
+            let result = try await DeepSeekAPI.fetchBalance(apiKey: "sk-test")
+            check("transport.余额 200 解析", result.primary?.total == 343.91)
+            check("transport.余额 Authorization 头", MockURLProtocol.lastAuthorization == "Bearer sk-test")
+        } catch {
+            check("transport.余额 200 解析", false, "\(error)")
+        }
+
+        MockURLProtocol.reset()
+        MockURLProtocol.handler = { _ in
+            .init(status: 429, body: "{}", headers: ["Retry-After": "17"])
+        }
+        await expectError("transport.429 保留数字 Retry-After", {
+            _ = try await DeepSeekAPI.fetchBalance(apiKey: "sk-test")
+        }, {
+            if case .rateLimited(let retryAfter) = $0 { return retryAfter == 17 }
+            return false
+        })
+
+        let httpDate = DateFormatter()
+        httpDate.locale = Locale(identifier: "en_US_POSIX")
+        httpDate.timeZone = TimeZone(secondsFromGMT: 0)
+        httpDate.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        MockURLProtocol.reset()
+        MockURLProtocol.handler = { _ in
+            .init(status: 429, body: "{}",
+                  headers: ["Retry-After": httpDate.string(from: Date().addingTimeInterval(30))])
+        }
+        await expectError("transport.429 解析 HTTP 日期", {
+            _ = try await DeepSeekAPI.fetchBalance(apiKey: "sk-test")
+        }, {
+            if case .rateLimited(let retryAfter) = $0 {
+                guard let retryAfter else { return false }
+                return (25...31).contains(retryAfter)
+            }
+            return false
+        })
+
+        MockURLProtocol.reset()
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/v0/usage/by_api_key/amount":
+                return .init(status: 404, body: "missing")
+            case "/api/v0/usage/amount":
+                return .init(status: 200, body: windowAmountJSON)
+            case "/api/v0/usage/by_api_key/cost":
+                return .init(status: 404, body: "missing")
+            case "/api/v0/usage/cost":
+                return .init(status: 200, body: windowCostJSON)
+            default:
+                return .init(status: 500, body: "unexpected")
+            }
+        }
+        do {
+            let result = try await DeepSeekAPI.fetchWindowUsage(
+                userToken: "token", range: .today,
+                now: Date(timeIntervalSince1970: 1_800_000_000)
+            )
+            check("transport.400/404 路径回退汇总", result.totals.totalTokens == 220_000)
+            check("transport.金额与费用都回退", abs(result.cost - 0.0165) < 0.0001)
+            check("transport.平台 Authorization 头", MockURLProtocol.lastAuthorization == "Bearer token")
+            check("transport.回退请求顺序", MockURLProtocol.requestPaths == [
+                "/api/v0/usage/by_api_key/amount", "/api/v0/usage/amount",
+                "/api/v0/usage/by_api_key/cost", "/api/v0/usage/cost",
+            ])
+        } catch {
+            check("transport.400/404 路径回退汇总", false, "\(error)")
+        }
+
+        MockURLProtocol.reset()
+        MockURLProtocol.handler = { _ in
+            .init(status: 200, body: "{\"code\":40003,\"msg\":\"invalid token\"}")
+        }
+        await expectError("transport.40003 映射令牌失效", {
+            _ = try await DeepSeekAPI.fetchWindowUsage(userToken: "bad", range: .today)
+        }, { $0 == .invalidUserToken })
+        check("transport.认证失败不尝试费用路径", MockURLProtocol.requestPaths.count == 1)
+
+        MockURLProtocol.reset()
+        MockURLProtocol.handler = { _ in .init(status: 403, body: "<html>blocked</html>") }
+        await expectError("transport.403 HTML 映射 WAF", {
+            _ = try await DeepSeekAPI.fetchWindowUsage(userToken: "bad", range: .today)
+        }, { $0 == .wafBlocked })
+
+        MockURLProtocol.reset()
+        MockURLProtocol.handler = { _ in .init(status: 503, body: "unavailable") }
+        await expectError("transport.503 保留可重试语义", {
+            _ = try await DeepSeekAPI.fetchBalance(apiKey: "sk-test")
+        }, { $0.isTransient })
+
+        MockURLProtocol.reset()
+        MockURLProtocol.handler = { _ in throw URLError(.timedOut) }
+        await expectError("transport.超时映射临时网络错误", {
+            _ = try await DeepSeekAPI.fetchBalance(apiKey: "sk-test")
+        }, {
+            if case .network = $0 { return $0.isTransient }
+            return false
+        })
+
+        MockURLProtocol.reset()
+        MockURLProtocol.delay = 0.2
+        MockURLProtocol.handler = { _ in .init(status: 404, body: "missing") }
+        let cancelled = Task {
+            try await DeepSeekAPI.fetchWindowUsage(userToken: "token", range: .today)
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        cancelled.cancel()
+        do {
+            _ = try await cancelled.value
+            check("transport.取消请求抛出错误", false)
+        } catch {
+            check("transport.取消请求抛出错误", true)
+        }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        check("transport.取消后不再回退请求", MockURLProtocol.requestPaths.count == 1,
+              MockURLProtocol.requestPaths.joined(separator: ","))
     }
 
     // MARK: - 凭据规范化
@@ -526,21 +723,28 @@ enum ParserTests {
             BalanceSample(date: now.addingTimeInterval(-hoursAgo * 3600), total: total)
         }
 
-        // prune：丢过期、排序、截断
+        // prune：默认保留原始历史；传上限时才为展示抽样
         let messy = [sample(1, 10), sample(30, 99), sample(2, 9)]
         let pruned = BalanceTrend.prune(messy, now: now)
         check("prune 丢掉 24 小时以外的采样", pruned.count == 2, "实际 \(pruned.count)")
         check("prune 按时间升序", pruned.map(\.date) == pruned.map(\.date).sorted())
         let all = (0..<600).map { sample(Double($0) * 0.01, 1) }
         let capped = BalanceTrend.prune(all, now: now, limit: 100)
-        check("prune 截断到上限", capped.count == 100, "实际 \(capped.count)")
+        check("prune 截断到上限", capped.count <= 100 && capped.count >= 2, "实际 \(capped.count)")
         check("prune 抽样保留首点", capped.first?.date == all.last?.date)
         check("prune 抽样保留末点", capped.last?.date == all.first?.date)
-        let dense = BalanceTrend.prune((0...5760).map { sample(Double($0) * 15 / 3600, 100) },
-                                      now: now)
-        check("prune 高频采样仍覆盖 24 小时", dense.count == 500
+        let rawDense = BalanceTrend.prune((0...5760).map { sample(Double($0) * 15 / 3600, 100) },
+                                         now: now)
+        check("prune 默认保留全部原始采样", rawDense.count == 5761, "实际 \(rawDense.count)")
+        let dense = BalanceTrend.prune(rawDense, now: now, limit: 500)
+        check("prune 展示抽样仍覆盖 24 小时", dense.count <= 500
               && abs(BalanceTrend.span(dense) - 86400) < 1,
               "点数 \(dense.count)，跨度 \(BalanceTrend.span(dense))")
+        let spiky = BalanceTrend.prune((0..<600).map {
+            sample(Double($0) * 0.01, $0 == 137 ? 1_000 : ($0 == 433 ? 0 : 100))
+        }, now: now, limit: 100)
+        check("prune 保留桶内最高峰", spiky.contains { $0.total == 1_000 })
+        check("prune 保留桶内最低谷", spiky.contains { $0.total == 0 })
         check("prune 上限为 0 时返回空", BalanceTrend.prune(all, now: now, limit: 0).isEmpty)
         check("prune 上限为 1 时保留最新点",
               BalanceTrend.prune(all, now: now, limit: 1).first?.date == all.first?.date)
@@ -554,6 +758,9 @@ enum ParserTests {
         let recharge = [sample(3, 100), sample(2, 95), sample(1, 120), sample(0, 118)]
         check("rate 窗口内充值不抹掉前后消耗",
               abs((BalanceTrend.rate(recharge) ?? 0) - 7.0 / 3.0) < 0.001)
+        let rawSpending = (0...600).map { sample(6 - Double($0) * 0.01, $0 == 300 ? 90 : 100) }
+        check("rate 使用未抽样的完整扣费段",
+              abs((BalanceTrend.rate(rawSpending) ?? 0) - 10.0 / 6.0) < 0.001)
         check("rate 单点 → nil", BalanceTrend.rate([sample(1, 100)]) == nil)
 
         // span / 可靠性
@@ -568,6 +775,9 @@ enum ParserTests {
         let size = CGSize(width: 100, height: 40)
         let mapped = BalanceTrend.points([sample(2, 10), sample(1, 20), sample(0, 15)], in: size)
         check("points 数量与采样一致", mapped.count == 3, "实际 \(mapped.count)")
+        let densePoints = BalanceTrend.points(rawDense, in: size)
+        check("points 只抽样展示不修改原始历史", densePoints.count <= 500 && rawDense.count == 5761,
+              "展示 \(densePoints.count)，原始 \(rawDense.count)")
         check("points 横坐标按时间递增",
               mapped[0].x == 0 && abs(mapped[2].x - 100) < 0.01 && abs(mapped[1].x - 50) < 0.01)
         let uneven = BalanceTrend.points([sample(4, 10), sample(3, 20), sample(0, 15)], in: size)

@@ -263,7 +263,7 @@ final class AppModel: ObservableObject {
         if localSource {
             usage?.hasCost = false
             usage?.cost = 0
-            usage?.scopeNote = "本机 DSH · \(range.title)"
+            usage?.scopeNote = "本机 DSH 全会话 · \(range.title)"
             // 真实日志源自带分模型；示例数据的分模型原本挂在 monthlyUsage 上，
             // 这里搬进 usage，否则截图里会只剩一条压缩摘要（曾踩过）
             var models = monthly.models

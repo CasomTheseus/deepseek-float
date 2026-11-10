@@ -141,7 +141,7 @@ struct SettingsView: View {
 
                 switch model.usageSource {
                 case .localLog:
-                    Text("读取本机 ~/.dsh/sessions 下的 DSH 会话日志，只统计这台机器用当前 Key 发出的请求。不需要平台令牌，也不会上传任何东西。\n注意：日志只有 token 数、没有金额；同一把 Key 在别处（手机、其他客户端）的调用不计入。\n依赖 zstd 命令行解压（brew install zstd）。")
+                    Text("读取本机 ~/.dsh/sessions 下的全部 DSH 会话日志，不按 API Key 过滤；如果历史上换过 Key，也会累计旧 Key 的会话。不需要平台令牌，也不会上传任何东西。\n注意：日志只有 token 数、没有金额；其他客户端的调用不计入。\n依赖 zstd 命令行解压（brew install zstd）。")
                         .font(.system(size: 9))
                         .foregroundStyle(DS.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)

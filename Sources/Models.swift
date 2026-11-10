@@ -88,12 +88,12 @@ struct UsageSnapshot: Equatable {
 // MARK: - 用量来源
 
 /// 用量的取数来源。做成显式选择，是因为两条通路的**统计口径不同**：
-/// 平台接口是账户全量、官方账单口径；本地日志只有本机 DSH 发出的请求。
+/// 平台接口是账户全量、官方账单口径；本地日志覆盖本机 DSH 的全部会话。
 /// 混在一起显示会让人误以为是一套数字。
 enum UsageSource: String, CaseIterable, Identifiable {
     /// 平台令牌：platform.deepseek.com 用量接口，账户全量，含真实金额
     case platform
-    /// DSH 本地日志：只覆盖本机 DSH 的请求，逐请求、无需令牌，但没有金额
+    /// DSH 本地日志：本机全部会话，不按 API Key 过滤，无需令牌但没有金额
     case localLog
     /// 不显示用量，只看余额
     case none
@@ -111,7 +111,7 @@ enum UsageSource: String, CaseIterable, Identifiable {
     var caption: String {
         switch self {
         case .platform: return "账户全量 · 官方口径 · 含真实金额"
-        case .localLog: return "仅本机 DSH 请求 · 无需令牌 · 无金额"
+        case .localLog: return "本机全部会话 · 不按 Key 过滤 · 无金额"
         case .none: return "只看余额"
         }
     }

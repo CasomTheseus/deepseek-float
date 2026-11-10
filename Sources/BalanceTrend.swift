@@ -19,23 +19,51 @@ enum BalanceTrend {
     /// 采样少于这个时长时，速率只当参考，不当结论
     static let reliableSpan: TimeInterval = 30 * 60
 
-    /// 丢弃过期采样、按时间排序，并在整个窗口内均匀抽样。
-    /// 超出上限时不能直接删除最旧点，否则高频刷新会把「24 小时」缩成最近几小时。
+    /// 丢弃过期采样并按时间排序。默认保留完整历史，供速率计算使用；
+    /// 只有调用方明确传上限时才抽样，避免展示精度反过来影响金额估算。
     static func prune(_ samples: [BalanceSample],
                       now: Date,
                       window: TimeInterval = window,
-                      limit: Int = limit) -> [BalanceSample] {
+                      limit: Int? = nil) -> [BalanceSample] {
         let cutoff = now.addingTimeInterval(-window)
         let kept = samples
             .filter { $0.date >= cutoff && $0.date <= now.addingTimeInterval(60) }
             .sorted { $0.date < $1.date }
-        guard kept.count > limit else { return kept }
-        guard limit > 1 else { return limit == 1 ? [kept[kept.count - 1]] : [] }
+        guard let limit else { return kept }
+        return downsample(kept, limit: limit)
+    }
 
-        return (0..<limit).map { index in
-            let sourceIndex = Int((Double(index) / Double(limit - 1) * Double(kept.count - 1)).rounded())
-            return kept[sourceIndex]
+    /// 每个桶保留首尾和最高 / 最低点，确保尖峰、充值和快速下降不会只因均匀抽样而消失。
+    private static func downsample(_ samples: [BalanceSample], limit: Int) -> [BalanceSample] {
+        guard limit > 0 else { return [] }
+        guard samples.count > limit else { return samples }
+        guard limit >= 6 else {
+            if limit == 1 { return [samples[samples.count - 1]] }
+            return (0..<limit).map { index in
+                let sourceIndex = Int((Double(index) / Double(limit - 1) * Double(samples.count - 1)).rounded())
+                return samples[sourceIndex]
+            }
         }
+
+        let bucketCount = max(1, (limit - 2) / 4)
+        var selected: Set<Int> = [0, samples.count - 1]
+        for bucket in 0..<bucketCount {
+            let start = bucket * samples.count / bucketCount
+            let end = (bucket + 1) * samples.count / bucketCount
+            guard start < end else { continue }
+            selected.insert(start)
+            selected.insert(end - 1)
+
+            var minIndex = start
+            var maxIndex = start
+            for index in start..<end {
+                if samples[index].total < samples[minIndex].total { minIndex = index }
+                if samples[index].total > samples[maxIndex].total { maxIndex = index }
+            }
+            selected.insert(minIndex)
+            selected.insert(maxIndex)
+        }
+        return selected.sorted().map { samples[$0] }
     }
 
     /// 采样跨度（秒）。少于两个点时为 0。
@@ -63,10 +91,10 @@ enum BalanceTrend {
         span(samples) >= reliableSpan
     }
 
-    /// 把采样映射成视图里的折线点（原点左上，y 向下）。始终按实际 min/max 自适应。
-    ///
-    /// 边界情况都在这里处理掉了：只有一个点、所有值相同、空数组。
+    /// 把采样映射成视图里的折线点（原点左上，y 向下）。仅在这里限制显示点数，
+    /// 不改变调用方持有的原始历史；纵轴仍按展示点的实际 min/max 自适应。
     static func points(_ samples: [BalanceSample], in size: CGSize) -> [CGPoint] {
+        let samples = downsample(samples.sorted { $0.date < $1.date }, limit: limit)
         guard !samples.isEmpty, size.width > 0, size.height > 0 else { return [] }
         guard samples.count > 1 else {
             return [CGPoint(x: 0, y: size.height / 2)]

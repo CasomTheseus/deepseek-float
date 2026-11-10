@@ -229,7 +229,7 @@ case "${1:-build}" in
   icon)    cmd_icon ;;
   test)
     cmd_build
-    log "解析器夹具测试"
+    log "离线回归测试"
     "$APP/Contents/MacOS/$EXEC_NAME" --parsetest
     ;;
   clean)   cmd_clean ;;
